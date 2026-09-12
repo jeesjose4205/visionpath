@@ -1,6 +1,10 @@
 import 'dart:async';
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../services/camera_service.dart';
 
 class NavigateScreen extends StatefulWidget {
   const NavigateScreen({super.key});
@@ -24,6 +28,7 @@ class _NavigateScreenState extends State<NavigateScreen> {
   @override
   void dispose() {
     _demoTimer?.cancel();
+    // CameraService is managed by provider
     super.dispose();
   }
 
@@ -31,7 +36,18 @@ class _NavigateScreenState extends State<NavigateScreen> {
   // START NAVIGATION
   // ------------------------------------------------------------
 
-  void _startNavigation() {
+  void _startNavigation() async {
+    // Initialize camera if needed
+    final cameraService = Provider.of<CameraService>(context, listen: false);
+    if (!cameraService.isInitialized) {
+      await cameraService.initializeController();
+    }
+
+    // Start image stream
+    await cameraService.startImageStream();
+
+    if (!mounted) return;
+
     setState(() {
       _isNavigating = true;
       _navigationStatus = 'Analyzing path';
@@ -42,6 +58,28 @@ class _NavigateScreenState extends State<NavigateScreen> {
     });
 
     _startDemoNavigation();
+  }
+
+  // ------------------------------------------------------------
+  // STOP NAVIGATION
+  // ------------------------------------------------------------
+
+  void _stopNavigation() async {
+    _demoTimer?.cancel();
+
+    // Stop image stream
+    final cameraService = Provider.of<CameraService>(context, listen: false);
+    await cameraService.stopImageStream();
+
+    if (!mounted) return;
+
+    setState(() {
+      _isNavigating = false;
+      _navigationStatus = 'Navigation stopped';
+      _instruction = 'Press START NAVIGATION';
+      _detectedObject = 'No obstacle detected';
+      _direction = 'FORWARD';
+    });
   }
 
   // ------------------------------------------------------------
@@ -138,22 +176,6 @@ class _NavigateScreenState extends State<NavigateScreen> {
   }
 
   // ------------------------------------------------------------
-  // STOP NAVIGATION
-  // ------------------------------------------------------------
-
-  void _stopNavigation() {
-    _demoTimer?.cancel();
-
-    setState(() {
-      _isNavigating = false;
-      _navigationStatus = 'Navigation stopped';
-      _instruction = 'Press START NAVIGATION';
-      _detectedObject = 'No obstacle detected';
-      _direction = 'FORWARD';
-    });
-  }
-
-  // ------------------------------------------------------------
   // REPEAT INSTRUCTION
   // ------------------------------------------------------------
 
@@ -164,9 +186,6 @@ class _NavigateScreenState extends State<NavigateScreen> {
         duration: const Duration(seconds: 2),
       ),
     );
-
-    // Later:
-    // _speakInstruction(_instruction);
   }
 
   // ------------------------------------------------------------
@@ -366,142 +385,145 @@ class _NavigateScreenState extends State<NavigateScreen> {
   // ------------------------------------------------------------
 
   Widget _buildCameraPreview() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(22),
-      child: Container(
-        width: double.infinity,
-        decoration: BoxDecoration(
-          color: const Color(0xFF20252B),
-          borderRadius: BorderRadius.circular(22),
-        ),
-        child: Stack(
-          children: [
-            // --------------------------------------------------
-            // CAMERA PLACEHOLDER
-            // --------------------------------------------------
-            //
-            // Later this container will be replaced with:
-            //
-            // CameraPreview(_cameraController)
-            //
-            // --------------------------------------------------
-
-            const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.videocam_outlined,
-                    color: Colors.white70,
-                    size: 58,
-                  ),
-                  SizedBox(height: 12),
-                  Text(
-                    'Camera Preview',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  SizedBox(height: 5),
-                  Text(
-                    'AI navigation view',
-                    style: TextStyle(
-                      color: Colors.white60,
-                      fontSize: 13,
-                    ),
-                  ),
-                ],
+    return Consumer<CameraService>(
+      builder: (context, cameraService, child) {
+        if (!cameraService.isInitialized) {
+          // Camera not initialized yet
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(22),
+            child: Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: const Color(0xFF20252B),
+                borderRadius: BorderRadius.circular(22),
               ),
-            ),
-
-            // --------------------------------------------------
-            // SCAN FRAME
-            // --------------------------------------------------
-
-            Positioned.fill(
-              child: CustomPaint(
-                painter: _NavigationFramePainter(),
-              ),
-            ),
-
-            // --------------------------------------------------
-            // AI STATUS
-            // --------------------------------------------------
-
-            Positioned(
-              top: 14,
-              left: 14,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 7,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: _isNavigating
-                            ? Colors.greenAccent
-                            : Colors.white54,
-                        shape: BoxShape.circle,
+                    Icon(
+                      Icons.videocam_outlined,
+                      color: Colors.white70,
+                      size: 58,
+                    ),
+                    SizedBox(height: 12),
+                    Text(
+                      'Camera Preview',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(width: 7),
+                    SizedBox(height: 5),
                     Text(
-                      _isNavigating
-                          ? 'AI ANALYZING'
-                          : 'CAMERA READY',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.5,
+                      'AI navigation view',
+                      style: TextStyle(
+                        color: Colors.white60,
+                        fontSize: 13,
                       ),
                     ),
                   ],
                 ),
               ),
             ),
+          );
+        }
 
-            // --------------------------------------------------
-            // DETECTED OBJECT
-            // --------------------------------------------------
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(22),
+          child: Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: const Color(0xFF20252B),
+              borderRadius: BorderRadius.circular(22),
+            ),
+            child: Stack(
+              children: [
+                // Live Camera Preview
+                Positioned.fill(
+                  child: CameraPreview(cameraService.controller!),
+                ),
 
-            if (_isNavigating)
-              Positioned(
-                left: 14,
-                bottom: 14,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
+                // Scan frame overlay
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: _NavigationFramePainter(),
                   ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.60),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Text(
-                    _detectedObject,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                ),
+
+                // AI STATUS
+                Positioned(
+                  top: 14,
+                  left: 14,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.55),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: _isNavigating
+                                ? Colors.greenAccent
+                                : Colors.white54,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 7),
+                        Text(
+                          _isNavigating
+                              ? 'AI ANALYZING'
+                              : 'CAMERA READY',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
-              ),
-          ],
-        ),
-      ),
+
+                // DETECTED OBJECT
+                if (_isNavigating)
+                  Positioned(
+                    left: 14,
+                    bottom: 14,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.60),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Text(
+                        _detectedObject,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
