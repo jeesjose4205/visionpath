@@ -1,0 +1,25 @@
+warning: in the working copy of 'lib/main.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/screens/emergency_screen.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/screens/navigate_screen.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/screens/read_text_screen.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/services/camera_service.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'linux/flutter/generated_plugin_registrant.cc', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'linux/flutter/generated_plugins.cmake', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'macos/Flutter/GeneratedPluginRegistrant.swift', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'pubspec.lock', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'windows/flutter/generated_plugin_registrant.cc', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'windows/flutter/generated_plugins.cmake', LF will be replaced by CRLF the next time Git touches it
+ android/app/src/main/AndroidManifest.xml       |    4 [32m+[m
+ lib/main.dart                                  |   24 [32m+[m[31m-[m
+ lib/screens/emergency_screen.dart              | 2680 [32m+++++++[m[31m-----------------[m
+ lib/screens/navigate_screen.dart               |  990 [32m+++++[m[31m----[m
+ lib/screens/read_text_screen.dart              | 1025 [32m++++++[m[31m---[m
+ lib/services/camera_service.dart               |  244 [32m++[m[31m-[m
+ linux/flutter/generated_plugin_registrant.cc   |    4 [32m+[m
+ linux/flutter/generated_plugins.cmake          |    2 [32m+[m
+ macos/Flutter/GeneratedPluginRegistrant.swift  |    8 [32m+[m
+ pubspec.lock                                   |  320 [32m+++[m
+ pubspec.yaml                                   |    4 [32m+[m
+ windows/flutter/generated_plugin_registrant.cc |    6 [32m+[m
+ windows/flutter/generated_plugins.cmake        |    3 [32m+[m
+ 13 files changed, 2511 insertions(+), 2803 deletions(-)

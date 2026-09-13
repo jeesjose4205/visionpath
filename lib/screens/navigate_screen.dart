@@ -4,7 +4,40 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/detected_object.dart';
+import '../models/navigation_decision.dart';
+import '../models/path_analysis.dart';
 import '../services/camera_service.dart';
+import '../services/depth_analysis_service.dart';
+import '../services/instruction_manager.dart';
+import '../services/navigation_service.dart';
+import '../services/object_detection_service.dart';
+import '../services/path_analysis_service.dart';
+import '../services/position_detection_service.dart';
+import '../services/voice_service.dart';
+import '../widgets/detection_overlay.dart';
+
+/// Navigate screen - camera-based visual navigation assistance.
+///
+/// Pipeline per frame:
+/// CameraImage -> frame sampling (5 FPS) -> YUV->RGB -> YOLO predict ->
+/// DetectedObject -> position analysis -> depth analysis -> path analysis ->
+/// navigation decision -> instruction manager -> voice -> UI.
+enum _NavState {
+  idle('Ready to navigate', 'Press START NAVIGATION'),
+  starting('Starting navigation...', 'Preparing camera and model'),
+  cameraReady('Camera ready', 'Scanning for objects...'),
+  analyzing('Analyzing path', 'Monitoring your surroundings'),
+  clear('Path appears clear', 'Continue forward'),
+  obstacle('Obstacle detected', 'Use the instruction below'),
+  danger('Danger - slow down', 'Proceed with extreme caution'),
+  stopped('Navigation stopped', 'Press START NAVIGATION');
+
+  const _NavState(this.status, this.instruction);
+
+  final String status;
+  final String instruction;
+}
 
 class NavigateScreen extends StatefulWidget {
   const NavigateScreen({super.key});
@@ -14,256 +47,333 @@ class NavigateScreen extends StatefulWidget {
 }
 
 class _NavigateScreenState extends State<NavigateScreen> {
-  bool _isNavigating = false;
+  _NavState _navState = _NavState.idle;
   bool _voiceGuidance = true;
 
-  String _navigationStatus = 'Ready to navigate';
-  String _instruction = 'Press START NAVIGATION';
-  String _detectedObject = 'No obstacle detected';
-  String _direction = 'FORWARD';
+  String _detectionStatus = '';
+  String _detectedObject = 'No objects detected';
+  String _inferenceStatus = 'Initializing...';
 
-  Timer? _demoTimer;
-  int _demoStep = 0;
+  // Frame sampling
+  Timer? _inferenceTimer;
+  bool _inferenceInProgress = false;
+  int _inferenceTicks = 0;
+  int _framesObserved = 0;
+
+  CameraImage? _latestCameraImage;
+
+  // Pipeline services (stateful pieces owned by this screen).
+  final InstructionManager _instructionManager = InstructionManager();
+  final VoiceService _voiceService = VoiceService();
+
+  ObjectDetectionService? _objectDetectionService;
+  NavigationService? _navigationService;
+
+  @override
+  void initState() {
+    super.initState();
+    _voiceService.setEnabled(_voiceGuidance);
+    _initializeObjectDetection();
+  }
 
   @override
   void dispose() {
-    _demoTimer?.cancel();
-    // CameraService is managed by provider
+    _inferenceTimer?.cancel();
+    _instructionManager.reset();
+    _voiceService.stop();
     super.dispose();
+  }
+
+  // ------------------------------------------------------------
+  // INITIALIZE OBJECT DETECTION
+  // ------------------------------------------------------------
+
+  Future<void> _initializeObjectDetection() async {
+    print('NAVIGATE_INIT_OBJECT_DETECTION_START');
+
+    _objectDetectionService =
+        Provider.of<ObjectDetectionService>(context, listen: false);
+    _navigationService =
+        Provider.of<NavigationService>(context, listen: false);
+
+    if (_objectDetectionService == null || _navigationService == null) {
+      print('NAVIGATE_INIT_SERVICES_MISSING');
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _inferenceStatus = 'Loading YOLO26n model...';
+    });
+
+    final bool success = await _objectDetectionService!.initialize();
+    print('NAVIGATE_INIT_OBJECT_DETECTION_COMPLETE: success=$success');
+
+    if (!mounted) return;
+    setState(() {
+      _inferenceStatus = success
+          ? 'YOLO26n loaded'
+          : 'Model load failed: ${_objectDetectionService!.errorMessage}';
+    });
   }
 
   // ------------------------------------------------------------
   // START NAVIGATION
   // ------------------------------------------------------------
 
-  void _startNavigation() async {
-    // Initialize camera if needed
-    final cameraService = Provider.of<CameraService>(context, listen: false);
+  Future<void> _startNavigation() async {
+    print('NAVIGATE_START_PRESSED');
+    if (_navState == _NavState.starting) return;
+
+    setState(() => _navState = _NavState.starting);
+
+    // 1. Ensure camera is initialized (single controller).
+    final CameraService cameraService =
+        Provider.of<CameraService>(context, listen: false);
+
     if (!cameraService.isInitialized) {
-      await cameraService.initializeController();
+      final bool ok = await cameraService.initializeController();
+      if (!ok || !mounted) {
+        _showError('Camera could not be started: ${cameraService.errorMessage}');
+        setState(() => _navState = _NavState.idle);
+        return;
+      }
     }
 
-    // Start image stream
-    await cameraService.startImageStream();
+    if (!mounted) return;
+
+    // 2. Attach the navigation frame callback BEFORE starting the stream so a
+    //    frame can never arrive without a receiver.
+    cameraService.setOnFrameAvailable(_onNavigateFrame);
+    print('CAMERA_STREAM_START');
+    final bool streamStarted = await cameraService.startImageStream();
+    print('CAMERA_STREAM_STARTED: $streamStarted');
+    if (!streamStarted) {
+      _showError('Image stream failed: ${cameraService.errorMessage}');
+      setState(() => _navState = _NavState.idle);
+      return;
+    }
+
+    if (!mounted) return;
+
+    // 3. Reset per-run pipeline state.
+    _instructionManager.reset();
+    _latestCameraImage = null;
+    _inferenceTicks = 0;
+    _framesObserved = 0;
+    _inferenceInProgress = false;
+
+    setState(() {
+      _navState = _NavState.cameraReady;
+      _detectionStatus = '';
+      _detectedObject = 'No objects detected';
+    });
+
+    // 4. Begin the 5 FPS sampling loop with single-flight inference.
+    _startInferenceLoop();
+    print('NAVIGATE_INFERENCE_LOOP_STARTED');
+  }
+
+  // ------------------------------------------------------------
+  // NAVIGATE FRAME CALLBACK
+  // ------------------------------------------------------------
+
+  void _onNavigateFrame(CameraImage image) {
+    print('NAVIGATE_FRAME_CALLBACK_RECEIVED');
+    _latestCameraImage = image;
+    _framesObserved++;
+    print('LATEST_CAMERA_IMAGE_SET: frame=$_framesObserved ${image.width}x${image.height}');
+  }
+
+  // ------------------------------------------------------------
+  // INFERENCE LOOP (frame sampling ~5 FPS, single-flight)
+  // ------------------------------------------------------------
+
+  void _startInferenceLoop() {
+    _inferenceTimer?.cancel();
+
+    _inferenceTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+      if (_navState == _NavState.stopped ||
+          _navState == _NavState.idle ||
+          !mounted) {
+        timer.cancel();
+        return;
+      }
+
+      // Never overlap inference calls.
+      if (_inferenceInProgress) {
+        print('NAVIGATE_SKIPPED: inference in progress');
+        return;
+      }
+
+      final CameraImage? image = _latestCameraImage;
+      if (image == null) {
+        print('NAVIGATE_TICK_NO_IMAGE: cameraService.latestImage not set yet');
+        return;
+      }
+
+      _inferenceInProgress = true;
+      _runInference(image).whenComplete(() {
+        _inferenceInProgress = false;
+      });
+    });
+  }
+
+  // ------------------------------------------------------------
+  // INFERENCE PIPELINE
+  // ------------------------------------------------------------
+
+  Future<void> _runInference(CameraImage image) async {
+    final ObjectDetectionService? ods = _objectDetectionService;
+    final NavigationService? nav = _navigationService;
+    final CameraService cameraService =
+        Provider.of<CameraService>(context, listen: false);
+
+    if (ods == null || nav == null || !mounted) return;
+
+    // Transition CAMERA_READY -> ANALYZING on the first processed frame.
+    if (_navState == _NavState.cameraReady) {
+      setState(() => _navState = _NavState.analyzing);
+    }
+
+    _inferenceTicks++;
+    print('NAVIGATE_TICK: $_inferenceTicks framesObserved=$_framesObserved');
+
+    List<DetectedObject> detections;
+    try {
+      // CameraImage -> YOLO predict -> DetectedObject
+      detections = await ods.detectCameraImage(
+        image,
+        inputRotationQuarterTurns: cameraService.imageRotationQuarterTurns,
+      );
+    } catch (e, stack) {
+      print('NAVIGATE_INFERENCE_ERROR: $e');
+      print('NAVIGATE_INFERENCE_STACK: $stack');
+      return;
+    }
+
+    if (!mounted) return;
+
+    // Confidence filtering already applied via predict's confidenceThreshold.
+
+    // Position analysis (LEFT / CENTER / RIGHT) - model independent.
+    final PositionDetectionService positionService =
+        Provider.of<PositionDetectionService>(context, listen: false);
+    detections = positionService.analyze(detections);
+
+    // Approximate proximity/depth analysis.
+    final DepthAnalysisService depthService =
+        Provider.of<DepthAnalysisService>(context, listen: false);
+    detections = depthService.analyze(detections);
+
+    // Path analysis: is the walking path obstructed?
+    final PathAnalysisService pathService =
+        Provider.of<PathAnalysisService>(context, listen: false);
+    final PathAnalysisResult path = pathService.analyze(detections);
+
+    // Navigation decision.
+    nav.decide(path, detections);
+    final NavigationDecision decision = nav.lastDecision;
+
+    // Instruction Manager: suppress repeated messages.
+    final bool speak = _instructionManager.shouldSpeak(decision);
+    if (speak && _voiceGuidance) {
+      _voiceService.speak(nav.lastSpokenMessage);
+    }
 
     if (!mounted) return;
 
     setState(() {
-      _isNavigating = true;
-      _navigationStatus = 'Analyzing path';
-      _instruction = 'Path clear. Move forward.';
-      _detectedObject = 'No obstacle detected';
-      _direction = 'FORWARD';
-      _demoStep = 0;
+      _inferenceTicks++;
+      _navState = _mapDecisionToState(decision);
+      _updateDetectionFields(detections);
     });
+  }
 
-    _startDemoNavigation();
+  _NavState _mapDecisionToState(NavigationDecision decision) {
+    switch (decision) {
+      case NavigationDecision.forward:
+        return _NavState.clear;
+      case NavigationDecision.left:
+      case NavigationDecision.right:
+        return _NavState.obstacle;
+      case NavigationDecision.slow:
+        return _NavState.danger;
+      case NavigationDecision.stop:
+        return _NavState.danger;
+    }
+  }
+
+  void _updateDetectionFields(List<DetectedObject> detections) {
+    print('NAVIGATE_RESULTS_UI: ${detections.length} objects');
+    if (detections.isEmpty) {
+      _detectionStatus = '';
+      _detectedObject = 'No objects detected';
+      return;
+    }
+
+    final StringBuffer sb = StringBuffer();
+    for (final d in detections) {
+      sb.write('${d.displayName} ${d.horizontalPosition} ${(d.confidence * 100).toInt()}%');
+      if (d.proximity != null) sb.write(' ${d.proximity!.label}');
+      sb.write(' | ');
+    }
+    _detectionStatus = sb.toString().replaceFirst(RegExp(r' \| $'), '');
+    _detectedObject = '${detections.length} object${detections.length > 1 ? 's' : ''} detected';
   }
 
   // ------------------------------------------------------------
   // STOP NAVIGATION
   // ------------------------------------------------------------
 
-  void _stopNavigation() async {
-    _demoTimer?.cancel();
+  Future<void> _stopNavigation() async {
+    print('NAVIGATE_STOP_PRESSED');
 
-    // Stop image stream
-    final cameraService = Provider.of<CameraService>(context, listen: false);
+    _inferenceTimer?.cancel();
+
+    _instructionManager.reset();
+    _voiceService.stop();
+
+    final CameraService cameraService =
+        Provider.of<CameraService>(context, listen: false);
     await cameraService.stopImageStream();
 
+    _objectDetectionService?.stop();
+    _navigationService?.reset();
+    _latestCameraImage = null;
+
     if (!mounted) return;
 
     setState(() {
-      _isNavigating = false;
-      _navigationStatus = 'Navigation stopped';
-      _instruction = 'Press START NAVIGATION';
-      _detectedObject = 'No obstacle detected';
-      _direction = 'FORWARD';
+      _navState = _NavState.stopped;
+      _detectionStatus = '';
+      _detectedObject = 'No objects detected';
     });
   }
 
   // ------------------------------------------------------------
-  // DEMO NAVIGATION
-  // ------------------------------------------------------------
-  //
-  // This currently simulates AI navigation decisions.
-  // Later this will be replaced with:
-  //
-  // Camera → AI Detection → Path Analysis → Decision
-  //
-  // ------------------------------------------------------------
-
-  void _startDemoNavigation() {
-    _demoTimer?.cancel();
-
-    _demoTimer = Timer.periodic(
-      const Duration(seconds: 4),
-      (timer) {
-        if (!_isNavigating || !mounted) {
-          timer.cancel();
-          return;
-        }
-
-        _demoStep++;
-
-        switch (_demoStep % 5) {
-          case 1:
-            _updateNavigation(
-              status: 'Path clear',
-              instruction: 'Path clear. Move forward.',
-              object: 'No obstacle detected',
-              direction: 'FORWARD',
-            );
-            break;
-
-          case 2:
-            _updateNavigation(
-              status: 'Obstacle detected',
-              instruction: 'Obstacle ahead. Move slightly left.',
-              object: 'Obstacle • Center',
-              direction: 'LEFT',
-            );
-            break;
-
-          case 3:
-            _updateNavigation(
-              status: 'Path changing',
-              instruction: 'Continue forward.',
-              object: 'Path clear on left',
-              direction: 'FORWARD',
-            );
-            break;
-
-          case 4:
-            _updateNavigation(
-              status: 'Object detected',
-              instruction: 'Person ahead. Slow down.',
-              object: 'Person • Center',
-              direction: 'SLOW',
-            );
-            break;
-
-          case 0:
-            _updateNavigation(
-              status: 'Path clear',
-              instruction: 'Path clear. Continue forward.',
-              object: 'No obstacle detected',
-              direction: 'FORWARD',
-            );
-            break;
-        }
-      },
-    );
-  }
-
-  void _updateNavigation({
-    required String status,
-    required String instruction,
-    required String object,
-    required String direction,
-  }) {
-    if (!mounted) return;
-
-    setState(() {
-      _navigationStatus = status;
-      _instruction = instruction;
-      _detectedObject = object;
-      _direction = direction;
-    });
-
-    // Later:
-    // _speakInstruction(instruction);
-  }
-
-  // ------------------------------------------------------------
-  // REPEAT INSTRUCTION
-  // ------------------------------------------------------------
-
-  void _repeatInstruction() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(_instruction),
-        duration: const Duration(seconds: 2),
-      ),
-    );
-  }
-
-  // ------------------------------------------------------------
-  // VOICE GUIDANCE
+  // VOICE TOGGLE
   // ------------------------------------------------------------
 
   void _toggleVoiceGuidance() {
     setState(() {
       _voiceGuidance = !_voiceGuidance;
     });
+    _voiceService.setEnabled(_voiceGuidance);
   }
 
   // ------------------------------------------------------------
-  // SETTINGS
+  // ERROR HANDLING
   // ------------------------------------------------------------
 
-  void _openSettings() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(24),
-        ),
+  void _showError(String message) {
+    print('NAVIGATE_ERROR: $message');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: const Color(0xFFD92D20),
       ),
-      builder: (context) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(
-              24,
-              20,
-              24,
-              24,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 42,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                const Text(
-                  'Navigation Settings',
-                  style: TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 18),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text(
-                    'Voice Guidance',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  subtitle: const Text(
-                    'Speak navigation instructions',
-                  ),
-                  value: _voiceGuidance,
-                  onChanged: (value) {
-                    setState(() {
-                      _voiceGuidance = value;
-                    });
-                    Navigator.pop(context);
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
-      },
     );
   }
 
@@ -274,7 +384,6 @@ class _NavigateScreenState extends State<NavigateScreen> {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
-
     final bool compact = size.height < 700;
 
     return Scaffold(
@@ -337,10 +446,10 @@ class _NavigateScreenState extends State<NavigateScreen> {
           _HeaderButton(
             icon: Icons.arrow_back,
             onTap: () {
-              if (_isNavigating) {
+              if (_navState != _NavState.idle &&
+                  _navState != _NavState.stopped) {
                 _stopNavigation();
               }
-
               Navigator.pop(context);
             },
           ),
@@ -371,9 +480,12 @@ class _NavigateScreenState extends State<NavigateScreen> {
             ),
           ),
 
+          // Voice status toggle
           _HeaderButton(
-            icon: Icons.settings_outlined,
-            onTap: _openSettings,
+            icon: _voiceGuidance
+                ? Icons.volume_up_outlined
+                : Icons.volume_off_outlined,
+            onTap: _toggleVoiceGuidance,
           ),
         ],
       ),
@@ -381,54 +493,13 @@ class _NavigateScreenState extends State<NavigateScreen> {
   }
 
   // ------------------------------------------------------------
-  // CAMERA PREVIEW
+  // CAMERA PREVIEW + DETECTION OVERLAY
   // ------------------------------------------------------------
 
   Widget _buildCameraPreview() {
     return Consumer<CameraService>(
       builder: (context, cameraService, child) {
-        if (!cameraService.isInitialized) {
-          // Camera not initialized yet
-          return ClipRRect(
-            borderRadius: BorderRadius.circular(22),
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: const Color(0xFF20252B),
-                borderRadius: BorderRadius.circular(22),
-              ),
-              child: const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.videocam_outlined,
-                      color: Colors.white70,
-                      size: 58,
-                    ),
-                    SizedBox(height: 12),
-                    Text(
-                      'Camera Preview',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    SizedBox(height: 5),
-                    Text(
-                      'AI navigation view',
-                      style: TextStyle(
-                        color: Colors.white60,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        }
+        final bool initialized = cameraService.isInitialized;
 
         return ClipRRect(
           borderRadius: BorderRadius.circular(22),
@@ -438,89 +509,137 @@ class _NavigateScreenState extends State<NavigateScreen> {
               color: const Color(0xFF20252B),
               borderRadius: BorderRadius.circular(22),
             ),
-            child: Stack(
-              children: [
-                // Live Camera Preview
-                Positioned.fill(
-                  child: CameraPreview(cameraService.controller!),
-                ),
+            child: initialized
+                ? Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Single camera preview (same controller as the stream).
+                      CameraPreview(cameraService.controller!),
 
-                // Scan frame overlay
-                Positioned.fill(
-                  child: CustomPaint(
-                    painter: _NavigationFramePainter(),
-                  ),
-                ),
+                      // Detection overlay with bounding boxes + labels.
+                      if (_navState != _NavState.idle &&
+                          _navState != _NavState.stopped &&
+                          _objectDetectionService != null)
+                        Consumer<ObjectDetectionService>(
+                          builder: (context, ods, child) {
+                            print('OVERLAY_CONSUMER_OBJECT_COUNT: ${ods.currentResults.length}');
+                            return DetectionOverlay(
+                              previewSize: MediaQuery.of(context).size,
+                              results: ods.currentResults,
+                            );
+                          },
+                        ),
 
-                // AI STATUS
-                Positioned(
-                  top: 14,
-                  left: 14,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 7,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.55),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
+                      // Scan frame corners.
+                      Positioned.fill(
+                        child: CustomPaint(painter: _NavigationFramePainter()),
+                      ),
+
+                      // AI status pill.
+                      Positioned(
+                        top: 14,
+                        left: 14,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 7,
+                          ),
                           decoration: BoxDecoration(
-                            color: _isNavigating
-                                ? Colors.greenAccent
-                                : Colors.white54,
-                            shape: BoxShape.circle,
+                            color: Colors.black.withOpacity(0.55),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: cameraService.isImageStreamActive
+                                      ? Colors.greenAccent
+                                      : Colors.white54,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 7),
+                              Text(
+                                cameraService.isImageStreamActive
+                                    ? 'AI ANALYZING'
+                                    : 'CAMERA READY',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(width: 7),
-                        Text(
-                          _isNavigating
-                              ? 'AI ANALYZING'
-                              : 'CAMERA READY',
-                          style: const TextStyle(
+                      ),
+
+                      // Detection status (bottom-left).
+                      Positioned(
+                        left: 14,
+                        bottom: 14,
+                        child: Container(
+                          constraints: BoxConstraints(
+                            maxWidth:
+                                MediaQuery.of(context).size.width * 0.62,
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.60),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Text(
+                            _detectionStatus.isNotEmpty
+                                ? _detectionStatus
+                                : _detectedObject,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.videocam_outlined,
+                          color: Colors.white70,
+                          size: 58,
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Camera Preview',
+                          style: TextStyle(
                             color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0.5,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          _inferenceStatus,
+                          style: const TextStyle(
+                            color: Colors.white60,
+                            fontSize: 13,
                           ),
                         ),
                       ],
                     ),
                   ),
-                ),
-
-                // DETECTED OBJECT
-                if (_isNavigating)
-                  Positioned(
-                    left: 14,
-                    bottom: 14,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.60),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Text(
-                        _detectedObject,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
           ),
         );
       },
@@ -532,6 +651,11 @@ class _NavigateScreenState extends State<NavigateScreen> {
   // ------------------------------------------------------------
 
   Widget _buildStatusCard(bool compact) {
+    final bool running = _navState.index >= _NavState.cameraReady.index &&
+        _navState != _NavState.stopped;
+    final bool danger =
+        _navState == _NavState.danger;
+
     return Container(
       width: double.infinity,
       padding: EdgeInsets.symmetric(
@@ -541,9 +665,7 @@ class _NavigateScreenState extends State<NavigateScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: const Color(0xFFE4E7EC),
-        ),
+        border: Border.all(color: const Color(0xFFE4E7EC)),
       ),
       child: Row(
         children: [
@@ -551,18 +673,24 @@ class _NavigateScreenState extends State<NavigateScreen> {
             width: compact ? 40 : 46,
             height: compact ? 40 : 46,
             decoration: BoxDecoration(
-              color: _isNavigating
-                  ? const Color(0xFFE8F5E9)
-                  : const Color(0xFFF2F4F7),
+              color: danger
+                  ? const Color(0xFFFDE8E8)
+                  : running
+                      ? const Color(0xFFE8F5E9)
+                      : const Color(0xFFF2F4F7),
               borderRadius: BorderRadius.circular(13),
             ),
             child: Icon(
-              _isNavigating
-                  ? Icons.radar
-                  : Icons.navigation_outlined,
-              color: _isNavigating
-                  ? const Color(0xFF198754)
-                  : const Color(0xFF475467),
+              danger
+                  ? Icons.warning_amber_rounded
+                  : running
+                      ? Icons.radar
+                      : Icons.navigation_outlined,
+              color: danger
+                  ? const Color(0xFFD92D20)
+                  : running
+                      ? const Color(0xFF198754)
+                      : const Color(0xFF475467),
               size: compact ? 21 : 24,
             ),
           ),
@@ -574,7 +702,9 @@ class _NavigateScreenState extends State<NavigateScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _navigationStatus,
+                  _navState.status,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: compact ? 14 : 15,
                     fontWeight: FontWeight.bold,
@@ -583,9 +713,11 @@ class _NavigateScreenState extends State<NavigateScreen> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  _isNavigating
-                      ? 'Monitoring your path'
-                      : 'Ready to analyze your surroundings',
+                  _navigationService?.lastReason.isNotEmpty ?? false
+                      ? _navigationService!.lastReason
+                      : 'Monitoring your path',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: compact ? 11 : 12,
                     color: const Color(0xFF667085),
@@ -604,40 +736,38 @@ class _NavigateScreenState extends State<NavigateScreen> {
   // ------------------------------------------------------------
 
   Widget _buildInstructionCard(bool compact) {
+    // direction icon based on the most recent decision
     IconData directionIcon;
-
-    switch (_direction) {
-      case 'LEFT':
+    switch (_navigationService?.lastDecision ?? NavigationDecision.forward) {
+      case NavigationDecision.left:
         directionIcon = Icons.arrow_back;
         break;
-
-      case 'RIGHT':
+      case NavigationDecision.right:
         directionIcon = Icons.arrow_forward;
         break;
-
-      case 'SLOW':
+      case NavigationDecision.slow:
         directionIcon = Icons.slow_motion_video;
         break;
-
-      case 'STOP':
+      case NavigationDecision.stop:
         directionIcon = Icons.stop_circle_outlined;
         break;
-
-      default:
+      case NavigationDecision.forward:
         directionIcon = Icons.arrow_upward;
+        break;
     }
+
+    final String instructionText =
+        _navigationService?.lastSpokenMessage.isNotEmpty ?? false
+            ? _navigationService!.lastSpokenMessage
+            : _navState.instruction;
 
     return Container(
       width: double.infinity,
-      padding: EdgeInsets.all(
-        compact ? 14 : 18,
-      ),
+      padding: EdgeInsets.all(compact ? 14 : 18),
       decoration: BoxDecoration(
         color: const Color(0xFFEEF4FF),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: const Color(0xFFD9E5FF),
-        ),
+        border: Border.all(color: const Color(0xFFD9E5FF)),
       ),
       child: Row(
         children: [
@@ -662,9 +792,7 @@ class _NavigateScreenState extends State<NavigateScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _isNavigating
-                      ? 'NEXT ACTION'
-                      : 'NAVIGATION INSTRUCTION',
+                  'NEXT ACTION',
                   style: TextStyle(
                     fontSize: compact ? 10 : 11,
                     fontWeight: FontWeight.bold,
@@ -674,7 +802,7 @@ class _NavigateScreenState extends State<NavigateScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  _instruction,
+                  instructionText,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -696,45 +824,18 @@ class _NavigateScreenState extends State<NavigateScreen> {
   // ------------------------------------------------------------
 
   Widget _buildBottomControls(bool compact) {
+    final bool running = _navState.index >= _NavState.cameraReady.index &&
+        _navState != _NavState.stopped;
+
     return Column(
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: _SmallControlButton(
-                icon: Icons.volume_up_outlined,
-                label: _voiceGuidance
-                    ? 'Voice ON'
-                    : 'Voice OFF',
-                onTap: _toggleVoiceGuidance,
-              ),
-            ),
-
-            const SizedBox(width: 10),
-
-            Expanded(
-              child: _SmallControlButton(
-                icon: Icons.replay,
-                label: 'Repeat',
-                onTap: _isNavigating
-                    ? _repeatInstruction
-                    : null,
-              ),
-            ),
-          ],
-        ),
-
-        SizedBox(height: compact ? 8 : 10),
-
         SizedBox(
           width: double.infinity,
           height: compact ? 48 : 54,
           child: ElevatedButton.icon(
-            onPressed: _isNavigating
-                ? _stopNavigation
-                : _startNavigation,
+            onPressed: running ? _stopNavigation : _startNavigation,
             style: ElevatedButton.styleFrom(
-              backgroundColor: _isNavigating
+              backgroundColor: running
                   ? const Color(0xFFD92D20)
                   : const Color(0xFF175CD3),
               foregroundColor: Colors.white,
@@ -744,15 +845,11 @@ class _NavigateScreenState extends State<NavigateScreen> {
               ),
             ),
             icon: Icon(
-              _isNavigating
-                  ? Icons.stop_circle_outlined
-                  : Icons.play_arrow_rounded,
+              running ? Icons.stop_circle_outlined : Icons.play_arrow_rounded,
               size: 25,
             ),
             label: Text(
-              _isNavigating
-                  ? 'STOP NAVIGATION'
-                  : 'START NAVIGATION',
+              running ? 'STOP NAVIGATION' : 'START NAVIGATION',
               style: TextStyle(
                 fontSize: compact ? 14 : 15,
                 fontWeight: FontWeight.bold,
@@ -774,10 +871,7 @@ class _HeaderButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
 
-  const _HeaderButton({
-    required this.icon,
-    required this.onTap,
-  });
+  const _HeaderButton({required this.icon, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -792,9 +886,7 @@ class _HeaderButton extends StatelessWidget {
           height: 44,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(13),
-            border: Border.all(
-              color: const Color(0xFFE4E7EC),
-            ),
+            border: Border.all(color: const Color(0xFFE4E7EC)),
           ),
           child: Icon(
             icon,
@@ -808,67 +900,12 @@ class _HeaderButton extends StatelessWidget {
 }
 
 // ============================================================
-// SMALL CONTROL BUTTON
-// ============================================================
-
-class _SmallControlButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback? onTap;
-
-  const _SmallControlButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final bool enabled = onTap != null;
-
-    return SizedBox(
-      height: 44,
-      child: OutlinedButton.icon(
-        onPressed: onTap,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: enabled
-              ? const Color(0xFF344054)
-              : const Color(0xFF98A2B3),
-          side: BorderSide(
-            color: enabled
-                ? const Color(0xFFD0D5DD)
-                : const Color(0xFFE4E7EC),
-          ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(13),
-          ),
-        ),
-        icon: Icon(
-          icon,
-          size: 19,
-        ),
-        label: Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ============================================================
 // NAVIGATION FRAME PAINTER
 // ============================================================
 
 class _NavigationFramePainter extends CustomPainter {
   @override
-  void paint(
-    Canvas canvas,
-    Size size,
-  ) {
+  void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = Colors.white.withOpacity(0.75)
       ..strokeWidth = 2
@@ -881,63 +918,18 @@ class _NavigationFramePainter extends CustomPainter {
 
     const double corner = 28;
 
-    // Top-left
-    canvas.drawLine(
-      Offset(left, top),
-      Offset(left + corner, top),
-      paint,
-    );
-
-    canvas.drawLine(
-      Offset(left, top),
-      Offset(left, top + corner),
-      paint,
-    );
-
-    // Top-right
-    canvas.drawLine(
-      Offset(right, top),
-      Offset(right - corner, top),
-      paint,
-    );
-
-    canvas.drawLine(
-      Offset(right, top),
-      Offset(right, top + corner),
-      paint,
-    );
-
-    // Bottom-left
-    canvas.drawLine(
-      Offset(left, bottom),
-      Offset(left + corner, bottom),
-      paint,
-    );
-
-    canvas.drawLine(
-      Offset(left, bottom),
-      Offset(left, bottom - corner),
-      paint,
-    );
-
-    // Bottom-right
-    canvas.drawLine(
-      Offset(right, bottom),
-      Offset(right - corner, bottom),
-      paint,
-    );
-
-    canvas.drawLine(
-      Offset(right, bottom),
-      Offset(right, bottom - corner),
-      paint,
-    );
+    canvas.drawLine(Offset(left, top), Offset(left + corner, top), paint);
+    canvas.drawLine(Offset(left, top), Offset(left, top + corner), paint);
+    canvas.drawLine(Offset(right, top), Offset(right - corner, top), paint);
+    canvas.drawLine(Offset(right, top), Offset(right, top + corner), paint);
+    canvas.drawLine(Offset(left, bottom), Offset(left + corner, bottom), paint);
+    canvas.drawLine(Offset(left, bottom), Offset(left, bottom - corner), paint);
+    canvas.drawLine(Offset(right, bottom), Offset(right - corner, bottom), paint);
+    canvas.drawLine(Offset(right, bottom), Offset(right, bottom - corner), paint);
   }
 
   @override
-  bool shouldRepaint(
-    covariant CustomPainter oldDelegate,
-  ) {
+  bool shouldRepaint(covariant CustomPainter oldDelegate) {
     return false;
   }
 }

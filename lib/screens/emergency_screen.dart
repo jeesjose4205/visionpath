@@ -1,1443 +1,759 @@
-import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
 
-// ============================================================
-// EMERGENCY SCREEN
-// ============================================================
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../models/emergency_contact.dart';
+import '../services/emergency_contact_service.dart';
+import '../services/voice_service.dart';
+import '../widgets/emergency_contact_card.dart';
+import '../widgets/emergency_location_card.dart';
+import '../widgets/emergency_sos_button.dart';
+
+enum _SosStatus { ready, activating, activated }
 
 class EmergencyScreen extends StatefulWidget {
-  const EmergencyScreen({
-    super.key,
-  });
+  const EmergencyScreen({super.key});
 
   @override
-  State<EmergencyScreen> createState() =>
-      _EmergencyScreenState();
+  State<EmergencyScreen> createState() => _EmergencyScreenState();
 }
 
-class _EmergencyScreenState
-    extends State<EmergencyScreen> {
-
-  bool isHolding = false;
-
-  double progress = 0.0;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor:
-          const Color(0xFFF8FAFD),
-
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final width =
-                constraints.maxWidth;
-
-            final height =
-                constraints.maxHeight;
-
-            return Padding(
-              padding:
-                  EdgeInsets.symmetric(
-                horizontal:
-                    width * 0.055,
-
-                vertical: 8,
-              ),
-
-              child: Column(
-                children: [
-
-                  // ==================================================
-                  // HEADER
-                  // ==================================================
-
-                  SizedBox(
-                    height:
-                        height * 0.07,
-
-                    child: Row(
-                      children: [
-
-                        Semantics(
-                          button: true,
-
-                          label:
-                              'Back to home',
-
-                          child: Material(
-                            color:
-                                Colors.transparent,
-
-                            child: InkWell(
-                              onTap: () {
-                                Navigator.of(
-                                  context,
-                                ).pop();
-                              },
-
-                              borderRadius:
-                                  BorderRadius.circular(
-                                16,
-                              ),
-
-                              child:
-                                  const SizedBox(
-                                width: 50,
-                                height: 50,
-
-                                child: Icon(
-                                  Icons
-                                      .arrow_back_rounded,
-
-                                  size: 29,
-
-                                  color:
-                                      Color(
-                                    0xFF15233D,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        const Expanded(
-                          child: Text(
-                            'Emergency',
-
-                            textAlign:
-                                TextAlign.center,
-
-                            style:
-                                TextStyle(
-                              fontSize: 23,
-
-                              fontWeight:
-                                  FontWeight.w700,
-
-                              color:
-                                  Color(
-                                0xFF15233D,
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        const SizedBox(
-                          width: 50,
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // ==================================================
-                  // SOS INTRO
-                  // ==================================================
-
-                  Expanded(
-                    flex: 25,
-
-                    child: Column(
-                      mainAxisAlignment:
-                          MainAxisAlignment.center,
-
-                      children: [
-
-                        // SOS CIRCLE
-                        Container(
-                          width: 145,
-                          height: 145,
-
-                          padding:
-                              const EdgeInsets.all(
-                            12,
-                          ),
-
-                          decoration:
-                              const BoxDecoration(
-                            shape:
-                                BoxShape.circle,
-
-                            color:
-                                Color(
-                              0xFFFFE7E7,
-                            ),
-                          ),
-
-                          child: Container(
-                            decoration:
-                                const BoxDecoration(
-                              shape:
-                                  BoxShape.circle,
-
-                              color:
-                                  Color(
-                                0xFFE63B3B,
-                              ),
-                            ),
-
-                            child:
-                                const Center(
-                              child: Text(
-                                'SOS',
-
-                                style:
-                                    TextStyle(
-                                  color:
-                                      Colors.white,
-
-                                  fontSize:
-                                      40,
-
-                                  fontWeight:
-                                      FontWeight.w800,
-
-                                  letterSpacing:
-                                      1,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        const SizedBox(
-                          height: 13,
-                        ),
-
-                        const Text(
-                          'Need emergency help?',
-
-                          textAlign:
-                              TextAlign.center,
-
-                          style:
-                              TextStyle(
-                            fontSize: 24,
-
-                            fontWeight:
-                                FontWeight.w700,
-
-                            letterSpacing:
-                                -0.5,
-
-                            color:
-                                Color(
-                              0xFF15233D,
-                            ),
-                          ),
-                        ),
-
-                        const SizedBox(
-                          height: 6,
-                        ),
-
-                        const Text(
-                          'Your current location will be shared\n'
-                          'with your emergency contacts.',
-
-                          textAlign:
-                              TextAlign.center,
-
-                          style:
-                              TextStyle(
-                            fontSize: 1,
-
-                            height: 1.35,
-
-                            color:
-                                Color(
-                              0xFF718096,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // ==================================================
-                  // HOLD SOS BUTTON
-                  // ==================================================
-
-                  Expanded(
-                    flex: 13,
-
-                    child: GestureDetector(
-                      onLongPressStart:
-                          (_) {
-                        startSOS();
-                      },
-
-                      onLongPressEnd:
-                          (_) {
-                        if (isHolding) {
-                          setState(() {
-                            isHolding =
-                                false;
-
-                            progress =
-                                0.0;
-                          });
-                        }
-                      },
-
-                      child: Semantics(
-                        button: true,
-
-                        label:
-                            'Hold for SOS for three seconds.',
-
-                        child: Container(
-                          width:
-                              double.infinity,
-
-                          decoration:
-                              BoxDecoration(
-                            color:
-                                const Color(
-                              0xFFE63B3B,
-                            ),
-
-                            borderRadius:
-                                BorderRadius
-                                    .circular(
-                              20,
-                            ),
-                          ),
-
-                          child: Stack(
-                            children: [
-
-                              // PROGRESS
-                              FractionallySizedBox(
-                                widthFactor:
-                                    progress,
-
-                                alignment:
-                                    Alignment
-                                        .centerLeft,
-
-                                child:
-                                    Container(
-                                  decoration:
-                                      BoxDecoration(
-                                    color:
-                                        const Color(
-                                      0xFFD52E2E,
-                                    ),
-
-                                    borderRadius:
-                                        BorderRadius
-                                            .circular(
-                                      20,
-                                    ),
-                                  ),
-                                ),
-                              ),
-
-                              // TEXT
-                              const Center(
-                                child: Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment
-                                          .center,
-
-                                  children: [
-
-                                    Icon(
-                                      Icons
-                                          .touch_app_outlined,
-
-                                      size: 35,
-
-                                      color:
-                                          Colors.white,
-                                    ),
-
-                                    SizedBox(
-                                      width: 14,
-                                    ),
-
-                                    Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment
-                                              .center,
-
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment
-                                              .start,
-
-                                      children: [
-
-                                        Text(
-                                          'HOLD FOR SOS',
-
-                                          style:
-                                              TextStyle(
-                                            color:
-                                                Colors.white,
-
-                                            fontSize:
-                                                18,
-
-                                            fontWeight:
-                                                FontWeight.w700,
-                                          ),
-                                        ),
-
-                                        SizedBox(
-                                          height: 3,
-                                        ),
-
-                                        Text(
-                                          'Press and hold for 3 seconds',
-
-                                          style:
-                                              TextStyle(
-                                            color:
-                                                Colors.white,
-
-                                            fontSize:
-                                                12.5,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(
-                    height: 12,
-                  ),
-
-                  // ==================================================
-                  // CALL + CONTACTS
-                  // ==================================================
-
-                  Expanded(
-                    flex: 11,
-
-                    child: Row(
-                      children: [
-
-                        Expanded(
-                          child:
-                              EmergencySmallCard(
-                            icon:
-                                Icons.phone_outlined,
-
-                            title:
-                                'Call 112',
-
-                            subtitle:
-                                'Emergency service',
-
-                            onTap: () {
-                              showMessage(
-                                context,
-                                'Call 112 selected',
-                              );
-                            },
-                          ),
-                        ),
-
-                        const SizedBox(
-                          width: 12,
-                        ),
-
-                        Expanded(
-                          child:
-                              EmergencySmallCard(
-                            icon:
-                                Icons
-                                    .people_outline_rounded,
-
-                            title:
-                                'Notify Contacts',
-
-                            subtitle:
-                                'Share location',
-
-                            onTap: () {
-                              showMessage(
-                                context,
-                                'Notify contacts selected',
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(
-                    height: 12,
-                  ),
-
-                  // ==================================================
-                  // EMERGENCY CONTACTS
-                  // ==================================================
-
-                  Expanded(
-                    flex: 25,
-
-                    child:
-                        const ContactsCard(),
-                  ),
-
-                  const SizedBox(
-                    height: 12,
-                  ),
-
-                  // ==================================================
-                  // LOCATION
-                  // ==================================================
-
-                  Expanded(
-                    flex: 11,
-
-                    child:
-                        const LocationCard(),
-                  ),
-
-                  const SizedBox(
-                    height: 4,
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  // ============================================================
-  // SOS TIMER
-  // ============================================================
-
-  Future<void> startSOS() async {
-    if (isHolding) {
-      return;
-    }
-
-    setState(() {
-      isHolding = true;
-      progress = 0;
-    });
-
-    for (int i = 1; i <= 30; i++) {
-      await Future.delayed(
-        const Duration(
-          milliseconds: 100,
-        ),
-      );
-
-      if (!mounted || !isHolding) {
-        return;
-      }
-
-      setState(() {
-        progress =
-            i / 30;
-      });
-    }
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      isHolding = false;
-      progress = 0;
-    });
-
-    showSOSActivated();
-  }
-
-  // ============================================================
-  // SOS ACTIVATED
-  // ============================================================
-
-  void showSOSActivated() {
-    showDialog(
-      context: context,
-
-      barrierDismissible: false,
-
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor:
-              Colors.white,
-
-          shape:
-              RoundedRectangleBorder(
-            borderRadius:
-                BorderRadius.circular(
-              24,
-            ),
-          ),
-
-          title: const Row(
-            children: [
-
-              Icon(
-                Icons.check_circle_rounded,
-
-                color:
-                    Color(0xFF15945F),
-
-                size: 30,
-              ),
-
-              SizedBox(
-                width: 10,
-              ),
-
-              Text(
-                'SOS Activated',
-              ),
-            ],
-          ),
-
-          content:
-              const Text(
-            'Emergency assistance has been activated. '
-            'Your location can now be shared with your trusted contacts.',
-          ),
-
-          actions: [
-
-            FilledButton(
-              onPressed: () {
-                Navigator.pop(
-                  context,
-                );
-              },
-
-              child:
-                  const Text(
-                'OK',
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-// ============================================================
-// EMERGENCY SMALL CARD
-// ============================================================
-
-class EmergencySmallCard
-    extends StatelessWidget {
-
-  final IconData icon;
-
-  final String title;
-  final String subtitle;
-
-  final VoidCallback onTap;
-
-  const EmergencySmallCard({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-
-      label:
-          '$title. $subtitle.',
-
-      child: Material(
-        color:
-            Colors.transparent,
-
-        child: InkWell(
-          onTap: onTap,
-
-          borderRadius:
-              BorderRadius.circular(
-            18,
-          ),
-
-          child: Container(
-            padding:
-                const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 9,
-            ),
-
-            decoration:
-                BoxDecoration(
-              color:
-                  Colors.white,
-
-              borderRadius:
-                  BorderRadius.circular(
-                18,
-              ),
-
-              border: Border.all(
-                color:
-                    const Color(
-                  0xFFE3E8EF,
-                ),
-              ),
-            ),
-
-            child: Row(
-              children: [
-
-                Container(
-                  width: 43,
-                  height: 43,
-
-                  decoration:
-                      const BoxDecoration(
-                    shape:
-                        BoxShape.circle,
-
-                    color:
-                        Color(
-                      0xFFE7F0FF,
-                    ),
-                  ),
-
-                  child: Icon(
-                    icon,
-
-                    size: 22,
-
-                    color:
-                        const Color(
-                      0xFF1769E0,
-                    ),
-                  ),
-                ),
-
-                const SizedBox(
-                  width: 10,
-                ),
-
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment:
-                        MainAxisAlignment
-                            .center,
-
-                    crossAxisAlignment:
-                        CrossAxisAlignment
-                            .start,
-
-                    children: [
-
-                      Text(
-                        title,
-
-                        maxLines: 2,
-
-                        overflow:
-                            TextOverflow.ellipsis,
-
-                        style:
-                            const TextStyle(
-                          fontSize: 13.5,
-
-                          fontWeight:
-                              FontWeight.w700,
-
-                          color:
-                              Color(
-                            0xFF15233D,
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(
-                        height: 2,
-                      ),
-
-                      Text(
-                        subtitle,
-
-                        maxLines: 1,
-
-                        overflow:
-                            TextOverflow.ellipsis,
-
-                        style:
-                            const TextStyle(
-                          fontSize: 10.5,
-
-                          color:
-                              Color(
-                            0xFF718096,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ============================================================
-// CONTACTS CARD
-// ============================================================
-
-class ContactsCard extends StatefulWidget {
-  const ContactsCard({
-    super.key,
-  });
-
-  @override
-  State<ContactsCard> createState() => _ContactsCardState();
-}
-
-class _ContactsCardState extends State<ContactsCard> {
-  List<Map<String, String>> contacts = [];
+class _EmergencyScreenState extends State<EmergencyScreen> {
+  static const Color _ink = Color(0xFF15233D);
+  static const Color _sub = Color(0xFF718096);
+  static const Color _accent = Color(0xFF1769E0);
+  static const Color _border = Color(0xFFE3E8EF);
+  static const Map<int, String> _numberWords = {
+    1: 'one',
+    2: 'two',
+    3: 'three',
+    4: 'four',
+    5: 'five',
+  };
+
+  final EmergencyContactService _contactService = EmergencyContactService();
+  final VoiceService _voice = VoiceService();
+
+  bool _voiceEnabled = true;
+  _SosStatus _status = _SosStatus.ready;
+  int _countdown = 5;
 
   @override
   void initState() {
     super.initState();
+    _voice.setEnabled(_voiceEnabled);
+    _contactService.addListener(_onContactsChanged);
     _loadContacts();
   }
 
-  // ============================================================
-  // LOAD CONTACTS
-  // ============================================================
+  void _onContactsChanged() {
+    if (mounted) setState(() {});
+  }
 
   Future<void> _loadContacts() async {
-    final prefs =
-        await SharedPreferences.getInstance();
-
-    final saved =
-        prefs.getStringList('emergency_contacts');
-
-    if (saved == null || saved.isEmpty) {
-      return;
-    }
-
-    final loaded =
-        <Map<String, String>>[];
-
-    for (final item in saved) {
-      try {
-        final data =
-            jsonDecode(item) as Map<String, dynamic>;
-
-        loaded.add({
-          'name': data['name']?.toString() ?? '',
-          'phone': data['phone']?.toString() ?? '',
-        });
-      } catch (_) {
-        // Ignore invalid saved contact
-      }
-    }
-
+    await _contactService.load();
     if (!mounted) return;
+    setState(() {});
+  }
 
+  @override
+  void dispose() {
+    _contactService.removeListener(_onContactsChanged);
+    _voice.setEnabled(false);
+    unawaited(_voice.dispose());
+    super.dispose();
+  }
+
+  void _toggleVoice() {
+    setState(() => _voiceEnabled = !_voiceEnabled);
+    _voice.setEnabled(_voiceEnabled);
+    if (_voiceEnabled) _voice.speak('Voice prompts enabled.');
+  }
+
+  void _onTick(int remaining) {
+    if (!mounted) return;
     setState(() {
-      contacts = loaded;
+      _status = _SosStatus.activating;
+      _countdown = remaining;
+    });
+    if (remaining == 5) {
+      _voice.speak('Emergency activation in five seconds.');
+    } else {
+      _voice.speak(_numberWords[remaining] ?? '$remaining');
+    }
+  }
+
+  void _onActivated() {
+    if (!mounted) return;
+    setState(() => _status = _SosStatus.activated);
+    _voice.speak('SOS activated.');
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _showContactSheet();
     });
   }
 
-  // ============================================================
-  // SAVE CONTACTS
-  // ============================================================
-
-  Future<void> _saveContacts() async {
-    final prefs =
-        await SharedPreferences.getInstance();
-
-    final saved = contacts.map((contact) {
-      return jsonEncode(contact);
-    }).toList();
-
-    await prefs.setStringList(
-      'emergency_contacts',
-      saved,
-    );
-  }
-
-  // ============================================================
-  // ADD CONTACT
-  // ============================================================
-
-  Future<void> _addContact() async {
-    if (contacts.length >= 5) {
-      showMessage(
-        context,
-        'Maximum 5 emergency contacts allowed',
-      );
-      return;
-    }
-
-    final result =
-        await showDialog<Map<String, String>>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return const ContactFormDialog(
-          title: 'Add Emergency Contact',
-          buttonText: 'Save Contact',
-        );
-      },
-    );
-
-    if (!mounted || result == null) {
-      return;
-    }
-
-    final duplicate = contacts.any(
-      (contact) =>
-          contact['phone'] == result['phone'],
-    );
-
-    if (duplicate) {
-      showMessage(
-        context,
-        'This phone number is already added',
-      );
-      return;
-    }
-
-    setState(() {
-      contacts.add(result);
-    });
-
-    await _saveContacts();
-
+  void _onCancelled() {
     if (!mounted) return;
-
-    showMessage(
-      context,
-      '${result['name']} added successfully',
-    );
-  }
-
-  // ============================================================
-  // EDIT CONTACT
-  // ============================================================
-
-  Future<void> _editContact(int index) async {
-    final contact = contacts[index];
-
-    final result =
-        await showDialog<Map<String, String>>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return ContactFormDialog(
-          title: 'Edit Contact',
-          buttonText: 'Save Changes',
-          initialName: contact['name'] ?? '',
-          initialPhone: contact['phone'] ?? '',
-        );
-      },
-    );
-
-    if (!mounted || result == null) {
-      return;
-    }
-
-    // Check duplicate phone number except
-    // for the contact currently being edited.
-    final duplicate = contacts.asMap().entries.any(
-      (entry) {
-        if (entry.key == index) {
-          return false;
-        }
-
-        return entry.value['phone'] ==
-            result['phone'];
-      },
-    );
-
-    if (duplicate) {
-      showMessage(
-        context,
-        'This phone number is already added',
-      );
-      return;
-    }
-
     setState(() {
-      contacts[index] = result;
+      _status = _SosStatus.ready;
+      _countdown = 5;
     });
-
-    await _saveContacts();
-
-    if (!mounted) return;
-
-    showMessage(
-      context,
-      'Contact updated',
-    );
+    _voice.speak('SOS cancelled.');
+    showMessage(context, 'SOS cancelled.');
   }
 
-  // ============================================================
-  // DELETE CONTACT
-  // ============================================================
-
-  Future<void> _deleteContact(int index) async {
-    final contact = contacts[index];
-
-    final confirmed =
-        await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text(
-            'Delete Contact?',
-            style: TextStyle(
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-
-          content: Text(
-            'Remove ${contact['name']} from emergency contacts?',
-          ),
-
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(
-                  dialogContext,
-                ).pop(false);
-              },
-              child: const Text(
-                'Cancel',
-              ),
-            ),
-
-            TextButton(
-              onPressed: () {
-                Navigator.of(
-                  dialogContext,
-                ).pop(true);
-              },
-
-              style: TextButton.styleFrom(
-                foregroundColor:
-                    const Color(0xFFE63B3B),
-              ),
-
-              child: const Text(
-                'Delete',
-              ),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (!mounted || confirmed != true) {
-      return;
-    }
-
+  void _onReset() {
+    if (!mounted) return;
     setState(() {
-      contacts.removeAt(index);
+      _status = _SosStatus.ready;
+      _countdown = 5;
     });
-
-    await _saveContacts();
-
-    if (!mounted) return;
-
-    showMessage(
-      context,
-      'Contact deleted',
-    );
+    _voice.speak('SOS deactivated. Stay safe.');
+    showMessage(context, 'SOS reset.');
   }
 
-  // ============================================================
-  // CONTACT OPTIONS
-  // ============================================================
-
-  void _showContactOptions(int index) {
-    showModalBottomSheet(
+  void _showContactSheet() {
+    showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (ctx) {
+        final contacts = _contactService.contacts;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+            child: contacts.isEmpty
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.person_add_alt_1_rounded,
+                        size: 46,
+                        color: _sub.withValues(alpha: 0.6),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'No emergency contacts yet',
+                        style: TextStyle(
+                          color: _ink,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Add a contact so you can call someone for help '
+                        'after activating SOS.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: _sub),
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: () {
+                          Navigator.of(ctx).pop();
+                          _openAddContact();
+                        },
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _accent,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 22,
+                            vertical: 12,
+                          ),
+                        ),
+                        icon: const Icon(Icons.person_add_alt_1_rounded),
+                        label: const Text('Add Emergency Contact'),
+                      ),
+                    ],
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'Choose an emergency contact to call',
+                        style: TextStyle(
+                          color: _ink,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'The dialer will open with the number ready.',
+                        style: TextStyle(color: _sub, fontSize: 13),
+                      ),
+                      const SizedBox(height: 10),
+                      for (final contact in contacts)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: _border),
+                            ),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 2,
+                              ),
+                              leading: Container(
+                                width: 42,
+                                height: 42,
+                                decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Color(0xFFFFF0EE),
+                                ),
+                                child: Center(
+                                  child: Text(
+                                    contact.name.trim().isEmpty
+                                        ? '?'
+                                        : contact.name.trim().characters.first
+                                            .toUpperCase(),
+                                    style: const TextStyle(
+                                      color: Color(0xFFE63B3B),
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              title: Text(
+                                contact.name,
+                                style: const TextStyle(
+                                  color: _ink,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              subtitle: Text(
+                                contact.phone,
+                                style: const TextStyle(color: _sub),
+                              ),
+                              trailing: FilledButton.icon(
+                                onPressed: () {
+                                  Navigator.of(ctx).pop();
+                                  _callContact(contact);
+                                },
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFF2E7D32),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                                icon: const Icon(
+                                  Icons.call_rounded,
+                                  size: 18,
+                                ),
+                                label: const Text('Call'),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
+        );
+      },
+    );
+  }
 
-      shape:
-          const RoundedRectangleBorder(
-        borderRadius:
-            BorderRadius.vertical(
-          top: Radius.circular(24),
+  Future<void> _callContact(EmergencyContact contact) async {
+    _voice.speak('Calling ${contact.name}.');
+    final uri = Uri(scheme: 'tel', path: contact.phone);
+    try {
+      final canLaunch = await canLaunchUrl(uri);
+      if (!mounted) return;
+      if (canLaunch) {
+        await launchUrl(uri);
+        if (!mounted) return;
+        showMessage(context, 'Opening dialer for ${contact.name}...');
+      } else {
+        showMessage(context, 'Unable to open the phone dialer.');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      showMessage(context, 'Unable to open the phone dialer.');
+    }
+  }
+
+  Future<void> _openAddContact() async {
+    if (_contactService.hasReachedMax) {
+      showMessage(context, 'Maximum 5 emergency contacts allowed.');
+      return;
+    }
+    final result = await showDialog<(String, String)>(
+      context: context,
+      builder: (_) => const ContactFormDialog(),
+    );
+    if (result == null || !mounted) return;
+    final outcome = await _contactService.addContact(result.$1, result.$2);
+    if (!mounted) return;
+    _showOutcome(outcome);
+  }
+
+  Future<void> _openEditContact(int index) async {
+    final current = _contactService.contactAt(index);
+    if (current == null) return;
+    final result = await showDialog<(String, String)>(
+      context: context,
+      builder: (_) => ContactFormDialog(
+        initialName: current.name,
+        initialPhone: current.phone,
+        title: 'Edit Emergency Contact',
+        saveLabel: 'Save Contact',
+      ),
+    );
+    if (result == null || !mounted) return;
+    final outcome = await _contactService.updateContact(
+      index,
+      result.$1,
+      result.$2,
+      currentPhone: current.phone,
+    );
+    if (!mounted) return;
+    _showOutcome(outcome);
+  }
+
+  void _showOutcome(ContactSaveResult outcome) {
+    switch (outcome) {
+      case ContactSaveResult.success:
+        showMessage(context, 'Emergency contact saved.');
+      case ContactSaveResult.duplicate:
+        showMessage(context, 'This phone number is already saved.');
+      case ContactSaveResult.maxReached:
+        showMessage(context, 'Maximum 5 emergency contacts allowed.');
+      case ContactSaveResult.invalid:
+        showMessage(context, 'Please enter a name and a valid phone number.');
+    }
+  }
+
+  void _confirmDelete(int index) {
+    final contact = _contactService.contactAt(index);
+    if (contact == null) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete contact?'),
+        content: Text(
+          'Remove ${contact.name} (${contact.phone}) from emergency contacts?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _contactService.deleteContact(index);
+              showMessage(context, 'Contact removed.');
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFD92D20),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFD),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final height = constraints.maxHeight;
+              final contacts = _contactService.contacts;
+              final n = contacts.length;
+
+              var cardH = 48.0;
+              if (n > 0) {
+                while (true) {
+                  final budget =
+                      height - 60 - 66 - _contactsHeight(cardH, n);
+                  if (budget >= 130 || cardH <= 32) break;
+                  cardH -= 2;
+                }
+              }
+              final contactsBlock = _contactsHeight(cardH, n);
+              var sosH = height - 60 - 66 - contactsBlock;
+              if (sosH > 360) sosH = 360;
+
+              return Column(
+                children: [
+                  SizedBox(height: 56, child: _buildHeader()),
+                  const SizedBox(height: 4),
+                  SizedBox(height: sosH < 0 ? 0 : sosH, child: _buildSosPanel()),
+                  const Spacer(),
+                  _buildContactsCard(cardH),
+                  const SizedBox(height: 10),
+                  const EmergencyLocationCard(),
+                  const SizedBox(height: 10),
+                ],
+              );
+            },
+          ),
         ),
       ),
+    );
+  }
 
-      builder: (sheetContext) {
-        return SafeArea(
+  double _contactsHeight(double cardH, int n) {
+    const double padV = 10;
+    const double headerRow = 40;
+    const double addButton = 46;
+    if (n == 0) {
+      return padV * 2 + headerRow + 10 + 66 + 10 + addButton;
+    }
+    return padV * 2 + headerRow + (n * cardH + (n - 1) * 7) + 12 + addButton;
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      children: [
+        _CircleButton(
+          icon: Icons.arrow_back_rounded,
+          tooltip: 'Back',
+          color: _ink,
+          onTap: () => Navigator.of(context).pop(),
+        ),
+        const SizedBox(width: 12),
+        const Expanded(
           child: Column(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ListTile(
-                leading: const Icon(
-                  Icons.edit_outlined,
+              Text(
+                'Emergency',
+                style: TextStyle(
+                  color: _ink,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
                 ),
-
-                title: const Text(
-                  'Edit Contact',
-                ),
-
-                onTap: () {
-                  Navigator.of(
-                    sheetContext,
-                  ).pop();
-
-                  Future.microtask(() {
-                    if (mounted) {
-                      _editContact(index);
-                    }
-                  });
-                },
               ),
-
-              ListTile(
-                leading: const Icon(
-                  Icons.delete_outline_rounded,
-                  color: Color(0xFFE63B3B),
-                ),
-
-                title: const Text(
-                  'Delete Contact',
-                  style: TextStyle(
-                    color: Color(0xFFE63B3B),
-                  ),
-                ),
-
-                onTap: () {
-                  Navigator.of(
-                    sheetContext,
-                  ).pop();
-
-                  Future.microtask(() {
-                    if (mounted) {
-                      _deleteContact(index);
-                    }
-                  });
-                },
-              ),
-
-              const SizedBox(
-                height: 8,
+              Text(
+                'Quick access to help',
+                style: TextStyle(color: _sub, fontSize: 12),
               ),
             ],
           ),
-        );
-      },
+        ),
+        _CircleButton(
+          icon: _voiceEnabled
+              ? Icons.volume_up_rounded
+              : Icons.volume_off_rounded,
+          tooltip: _voiceEnabled ? 'Voice prompts: ON' : 'Voice prompts: OFF',
+          color: _voiceEnabled ? _accent : const Color(0xFF9AA4B2),
+          onTap: _toggleVoice,
+        ),
+      ],
     );
   }
 
-  // ============================================================
-  // VIEW ALL CONTACTS
-  // ============================================================
-
-  void _viewAllContacts() {
-    if (contacts.isEmpty) {
-      showMessage(
-        context,
-        'No emergency contacts added',
-      );
-      return;
-    }
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-
-      shape:
-          const RoundedRectangleBorder(
-        borderRadius:
-            BorderRadius.vertical(
-          top: Radius.circular(24),
+  Widget _buildSosPanel() {
+    final (Color bg, Color fg, Color dot, String text) = switch (_status) {
+      _SosStatus.ready => (
+          const Color(0xFFE4F8EF),
+          const Color(0xFF15805A),
+          const Color(0xFF2EBD6E),
+          'READY',
         ),
+      _SosStatus.activating => (
+          const Color(0xFFFFF4E0),
+          const Color(0xFFB26A00),
+          const Color(0xFFE6A700),
+          'ACTIVATING · $_countdown',
+        ),
+      _SosStatus.activated => (
+          const Color(0xFFFFE8E8),
+          const Color(0xFFC62828),
+          const Color(0xFFFF5C63),
+          'ACTIVATED',
+        ),
+    };
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: _border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0F15233D),
+            blurRadius: 18,
+            offset: Offset(0, 4),
+          ),
+        ],
       ),
-
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(
-              20,
-              18,
-              20,
-              20,
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+            decoration: BoxDecoration(
+              color: bg,
+              borderRadius: BorderRadius.circular(18),
             ),
-
-            child: Column(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 40,
-                  height: 4,
-
+                  width: 8,
+                  height: 8,
                   decoration: BoxDecoration(
-                    color:
-                        const Color(0xFFD8DDE6),
-
-                    borderRadius:
-                        BorderRadius.circular(10),
+                    shape: BoxShape.circle,
+                    color: dot,
                   ),
                 ),
-
-                const SizedBox(
-                  height: 18,
-                ),
-
-                const Text(
-                  'Emergency Contacts',
-
+                const SizedBox(width: 8),
+                Text(
+                  text,
                   style: TextStyle(
-                    fontSize: 19,
-                    fontWeight:
-                        FontWeight.w700,
-                    color:
-                        Color(0xFF15233D),
+                    color: fg,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.3,
                   ),
-                ),
-
-                const SizedBox(
-                  height: 14,
-                ),
-
-                ...contacts.asMap().entries.map(
-                  (entry) {
-                    final index =
-                        entry.key;
-
-                    final contact =
-                        entry.value;
-
-                    return Padding(
-                      padding:
-                          const EdgeInsets.only(
-                        bottom: 8,
-                      ),
-
-                      child: ContactRow(
-                        name:
-                            contact['name'] ?? '',
-
-                        subtitle:
-                            contact['phone'] ?? '',
-
-                        onMore: () {
-                          Navigator.of(
-                            sheetContext,
-                          ).pop();
-
-                          Future.microtask(() {
-                            if (mounted) {
-                              _showContactOptions(
-                                index,
-                              );
-                            }
-                          });
-                        },
-                      ),
-                    );
-                  },
                 ),
               ],
             ),
           ),
-        );
-      },
-    );
-  }
-
-  // ============================================================
-  // BUILD
-  // ============================================================
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-
-      padding:
-          const EdgeInsets.all(11),
-
-      decoration: BoxDecoration(
-        color: Colors.white,
-
-        borderRadius:
-            BorderRadius.circular(20),
-
-        border: Border.all(
-          color:
-              const Color(0xFFE3E8EF),
-        ),
-      ),
-
-      child: Column(
-        children: [
-          // ------------------------------------------------------
-          // TITLE
-          // ------------------------------------------------------
-
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Emergency Contacts',
-
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight:
-                        FontWeight.w700,
-                    color:
-                        Color(0xFF15233D),
-                  ),
-                ),
-              ),
-
-              TextButton(
-                onPressed:
-                    _viewAllContacts,
-
-                child: const Text(
-                  'View all',
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(
-            height: 5,
-          ),
-
-          // ------------------------------------------------------
-          // CONTACT LIST
-          // ------------------------------------------------------
-
-          if (contacts.isEmpty)
-            const Expanded(
-              child: Center(
-                child: Text(
-                  'No emergency contacts added',
-
-                  textAlign:
-                      TextAlign.center,
-
-                  style: TextStyle(
-                    fontSize: 12,
-                    color:
-                        Color(0xFF8793A5),
-                  ),
-                ),
-              ),
-            )
-          else
-            Expanded(
-              child: Column(
-                children: [
-                  ContactRow(
-                    name:
-                        contacts[0]['name'] ?? '',
-
-                    subtitle:
-                        contacts[0]['phone'] ?? '',
-
-                    onMore: () {
-                      _showContactOptions(0);
-                    },
-                  ),
-
-                  if (contacts.length > 1) ...[
-                    const SizedBox(
-                      height: 6,
-                    ),
-
-                    ContactRow(
-                      name:
-                          contacts[1]['name'] ?? '',
-
-                      subtitle:
-                          contacts[1]['phone'] ?? '',
-
-                      onMore: () {
-                        _showContactOptions(1);
-                      },
-                    ),
-                  ],
-
-                  const Spacer(),
-                ],
-              ),
-            ),
-
-          const SizedBox(
-            height: 6,
-          ),
-
-          // ------------------------------------------------------
-          // ADD CONTACT
-          // ------------------------------------------------------
-
-          SizedBox(
-            width: double.infinity,
-            height: 38,
-
-            child: OutlinedButton.icon(
-              onPressed: _addContact,
-
-              icon: const Icon(
-                Icons.add,
-                size: 19,
-              ),
-
-              label: const Text(
-                'Add Contact',
-              ),
-
-              style:
-                  OutlinedButton.styleFrom(
-                foregroundColor:
-                    const Color(0xFF1769E0),
-
-                backgroundColor:
-                    const Color(0xFFF3F7FF),
-
-                side: const BorderSide(
-                  color:
-                      Color(0xFFDCE8FA),
-                ),
-
-                shape:
-                    RoundedRectangleBorder(
-                  borderRadius:
-                      BorderRadius.circular(12),
+          const SizedBox(height: 6),
+          Expanded(
+            child: Center(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: EmergencySOSButton(
+                  onActivated: _onActivated,
+                  onTick: _onTick,
+                  onCancelled: _onCancelled,
+                  onReset: _onReset,
                 ),
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildContactsCard(double cardH) {
+    final contacts = _contactService.contacts;
+    final n = contacts.length;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: _border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0F15233D),
+            blurRadius: 18,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Text(
+                'EMERGENCY CONTACTS',
+                style: TextStyle(
+                  color: _ink,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.6,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 3,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE7F0FF),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  '$n/5',
+                  style: const TextStyle(
+                    color: _accent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (n == 0)
+            Container(
+              height: 66,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFD),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFEAF0F7)),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.person_add_alt_1_rounded,
+                    size: 22,
+                    color: _sub.withValues(alpha: 0.6),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'No emergency contacts yet',
+                    style: TextStyle(
+                      color: _ink,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Text(
+                    'Add up to 5 trusted people',
+                    style: TextStyle(color: _sub, fontSize: 11),
+                  ),
+                ],
+              ),
+            )
+          else
+            for (var i = 0; i < n; i++)
+              Padding(
+                padding: EdgeInsets.only(bottom: i == n - 1 ? 0 : 7),
+                child: EmergencyContactCard(
+                  height: cardH,
+                  contact: contacts[i],
+                  onCall: () => _callContact(contacts[i]),
+                  onEdit: () => _openEditContact(i),
+                  onDelete: () => _confirmDelete(i),
+                ),
+              ),
+          const SizedBox(height: 12),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: _onAddPressed,
+              borderRadius: BorderRadius.circular(16),
+              child: Semantics(
+                button: true,
+                label: 'Add emergency contact',
+                child: Container(
+                  height: 46,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    gradient: const LinearGradient(
+                      begin: Alignment.centerLeft,
+                      end: Alignment.centerRight,
+                      colors: [Color(0xFF2E7BE6), _accent],
+                    ),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x331769E0),
+                        blurRadius: 12,
+                        offset: Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.add_rounded, size: 20, color: Colors.white),
+                      SizedBox(width: 6),
+                      Text(
+                        'ADD EMERGENCY CONTACT',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _onAddPressed() {
+    if (_contactService.hasReachedMax) {
+      showMessage(context, 'Maximum 5 emergency contacts allowed.');
+      return;
+    }
+    _openAddContact();
+  }
+}
+
+class _CircleButton extends StatelessWidget {
+  const _CircleButton({
+    required this.icon,
+    required this.tooltip,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: tooltip,
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white,
+              border: Border.all(color: const Color(0xFFE3E8EF)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x0F15233D),
+                  blurRadius: 10,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Icon(icon, color: color, size: 23),
+          ),
+        ),
       ),
     );
   }
@@ -1448,562 +764,113 @@ class _ContactsCardState extends State<ContactsCard> {
 // ============================================================
 
 class ContactFormDialog extends StatefulWidget {
-  final String title;
-  final String buttonText;
-  final String initialName;
-  final String initialPhone;
-
   const ContactFormDialog({
     super.key,
-    required this.title,
-    required this.buttonText,
     this.initialName = '',
     this.initialPhone = '',
+    this.title = 'Add Emergency Contact',
+    this.saveLabel = 'Add Contact',
   });
 
+  final String initialName;
+  final String initialPhone;
+  final String title;
+  final String saveLabel;
+
   @override
-  State<ContactFormDialog> createState() =>
-      _ContactFormDialogState();
+  State<ContactFormDialog> createState() => _ContactFormDialogState();
 }
 
-class _ContactFormDialogState
-    extends State<ContactFormDialog> {
-  late final TextEditingController
-      nameController;
-
-  late final TextEditingController
-      phoneController;
-
-  final formKey =
-      GlobalKey<FormState>();
+class _ContactFormDialogState extends State<ContactFormDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _phoneController;
+  String? _nameError;
+  String? _phoneError;
 
   @override
   void initState() {
     super.initState();
-
-    nameController =
-        TextEditingController(
-      text: widget.initialName,
-    );
-
-    phoneController =
-        TextEditingController(
-      text: widget.initialPhone,
-    );
+    _nameController = TextEditingController(text: widget.initialName);
+    _phoneController = TextEditingController(text: widget.initialPhone);
   }
 
   @override
   void dispose() {
-    nameController.dispose();
-    phoneController.dispose();
-
+    _nameController.dispose();
+    _phoneController.dispose();
     super.dispose();
   }
 
-  // ============================================================
-  // SAVE
-  // ============================================================
-
-  void _save() {
-    if (!formKey.currentState!.validate()) {
-      return;
-    }
-
-    final phone =
-        phoneController.text
-            .trim()
-            .replaceAll(
-              RegExp(r'[\s\-()]'),
-              '',
-            );
-
-    Navigator.of(context).pop({
-      'name':
-          nameController.text.trim(),
-
-      'phone': phone,
+  void _submit() {
+    final name = _nameController.text.trim();
+    final phone = _phoneController.text.trim();
+    setState(() {
+      _nameError =
+          EmergencyContactService.isValidName(name) ? null : 'Enter a name.';
+      _phoneError = EmergencyContactService.isValidPhone(phone)
+          ? null
+          : 'Enter a valid phone number.';
     });
+    if (_nameError != null || _phoneError != null) return;
+    Navigator.of(context).pop((name, phone));
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(
-        widget.title,
-
-        style: const TextStyle(
-          fontWeight:
-              FontWeight.w700,
-        ),
-      ),
-
-      content: Form(
-        key: formKey,
-
-        child: Column(
-          mainAxisSize:
-              MainAxisSize.min,
-
-          children: [
-            // ----------------------------------------------------
-            // NAME
-            // ----------------------------------------------------
-
-            TextFormField(
-              controller:
-                  nameController,
-
-              autofocus: true,
-
-              textCapitalization:
-                  TextCapitalization.words,
-
-              decoration:
-                  InputDecoration(
-                labelText: 'Name',
-
-                hintText:
-                    'Enter contact name',
-
-                prefixIcon:
-                    const Icon(
-                  Icons
-                      .person_outline_rounded,
-                ),
-
-                border:
-                    OutlineInputBorder(
-                  borderRadius:
-                      BorderRadius.circular(
-                    12,
-                  ),
-                ),
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _nameController,
+            autofocus: true,
+            textInputAction: TextInputAction.next,
+            decoration: InputDecoration(
+              labelText: 'Name',
+              hintText: 'e.g. Mom',
+              errorText: _nameError,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _phoneController,
+            keyboardType: TextInputType.phone,
+            textInputAction: TextInputAction.done,
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(
+                RegExp(r'[0-9+\-() ]'),
               ),
-
-              validator: (value) {
-                if (value == null ||
-                    value.trim().isEmpty) {
-                  return 'Enter a name';
-                }
-
-                if (value.trim().length <
-                    2) {
-                  return 'Enter a valid name';
-                }
-
-                return null;
-              },
+              LengthLimitingTextInputFormatter(20),
+            ],
+            onSubmitted: (_) => _submit(),
+            decoration: InputDecoration(
+              labelText: 'Phone number',
+              hintText: 'e.g. +1 555 123 4567',
+              errorText: _phoneError,
+              helperText: '8-15 digits',
+              border: const OutlineInputBorder(),
             ),
-
-            const SizedBox(
-              height: 14,
-            ),
-
-            // ----------------------------------------------------
-            // PHONE
-            // ----------------------------------------------------
-
-            TextFormField(
-              controller:
-                  phoneController,
-
-              keyboardType:
-                  TextInputType.phone,
-
-              decoration:
-                  InputDecoration(
-                labelText:
-                    'Phone Number',
-
-                hintText:
-                    'Enter phone number',
-
-                prefixIcon:
-                    const Icon(
-                  Icons.phone_outlined,
-                ),
-
-                border:
-                    OutlineInputBorder(
-                  borderRadius:
-                      BorderRadius.circular(
-                    12,
-                  ),
-                ),
-              ),
-
-              validator: (value) {
-                if (value == null ||
-                    value.trim().isEmpty) {
-                  return 'Enter a phone number';
-                }
-
-                final phone =
-                    value.replaceAll(
-                  RegExp(
-                    r'[\s\-()]',
-                  ),
-                  '',
-                );
-
-                if (!RegExp(
-                  r'^\+?[0-9]{10,15}$',
-                ).hasMatch(phone)) {
-                  return 'Enter a valid phone number';
-                }
-
-                return null;
-              },
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
-
       actions: [
         TextButton(
-          onPressed: () {
-            Navigator.of(context).pop();
-          },
-
-          child:
-              const Text('Cancel'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
         ),
-
-        ElevatedButton(
-          onPressed: _save,
-
-          style:
-              ElevatedButton.styleFrom(
-            backgroundColor:
-                const Color(0xFF1769E0),
-
-            foregroundColor:
-                Colors.white,
-
-            shape:
-                RoundedRectangleBorder(
-              borderRadius:
-                  BorderRadius.circular(
-                10,
-              ),
+        FilledButton(
+          onPressed: _submit,
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFFD92D20),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
             ),
           ),
-
-          child: Text(
-            widget.buttonText,
-          ),
+          child: Text(widget.saveLabel),
         ),
       ],
-    );
-  }
-}
-
-
-
-// ============================================================
-// CONTACT ROW
-// ============================================================
-
-class ContactRow extends StatelessWidget {
-  final String name;
-  final String subtitle;
-  final VoidCallback? onMore;
-
-  const ContactRow({
-    super.key,
-    required this.name,
-    required this.subtitle,
-    this.onMore,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 52,
-
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 10,
-      ),
-
-      decoration: BoxDecoration(
-        color:
-            const Color(0xFFFBFCFE),
-
-        borderRadius:
-            BorderRadius.circular(14),
-      ),
-
-      child: Row(
-        children: [
-          Container(
-            width: 38,
-            height: 38,
-
-            decoration:
-                const BoxDecoration(
-              shape: BoxShape.circle,
-
-              color:
-                  Color(0xFFE8EDF4),
-            ),
-
-            child: const Icon(
-              Icons
-                  .person_outline_rounded,
-
-              size: 22,
-
-              color:
-                  Color(0xFF8793A5),
-            ),
-          ),
-
-          const SizedBox(
-            width: 10,
-          ),
-
-          Expanded(
-            child: Column(
-              mainAxisAlignment:
-                  MainAxisAlignment.center,
-
-              crossAxisAlignment:
-                  CrossAxisAlignment.start,
-
-              children: [
-                Text(
-                  name,
-
-                  maxLines: 1,
-
-                  overflow:
-                      TextOverflow.ellipsis,
-
-                  style:
-                      const TextStyle(
-                    fontSize: 13.5,
-
-                    fontWeight:
-                        FontWeight.w700,
-
-                    color:
-                        Color(0xFF15233D),
-                  ),
-                ),
-
-                const SizedBox(
-                  height: 2,
-                ),
-
-                Text(
-                  subtitle,
-
-                  maxLines: 1,
-
-                  overflow:
-                      TextOverflow.ellipsis,
-
-                  style:
-                      const TextStyle(
-                    fontSize: 10.5,
-
-                    color:
-                        Color(0xFF718096),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          IconButton(
-            onPressed: onMore,
-
-            padding:
-                EdgeInsets.zero,
-
-            constraints:
-                const BoxConstraints(
-              minWidth: 32,
-              minHeight: 32,
-            ),
-
-            icon: const Icon(
-              Icons
-                  .more_vert_rounded,
-
-              size: 21,
-
-              color:
-                  Color(0xFF15233D),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-
-// ============================================================
-// LOCATION CARD
-// ============================================================
-
-class LocationCard
-    extends StatelessWidget {
-
-  const LocationCard({
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width:
-          double.infinity,
-
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 13,
-        vertical: 7,
-      ),
-
-      decoration:
-          BoxDecoration(
-        color:
-            Colors.white,
-
-        borderRadius:
-            BorderRadius.circular(
-          18,
-        ),
-
-        border: Border.all(
-          color:
-              const Color(
-            0xFFE3E8EF,
-          ),
-        ),
-      ),
-
-      child: Row(
-        children: [
-
-          Container(
-            width: 43,
-            height: 43,
-
-            decoration:
-                const BoxDecoration(
-              shape:
-                  BoxShape.circle,
-
-              color:
-                  Color(
-                0xFFE4F8EF,
-              ),
-            ),
-
-            child:
-                const Icon(
-              Icons
-                  .location_on_outlined,
-
-              size: 24,
-
-              color:
-                  Color(
-                0xFF15945F,
-              ),
-            ),
-          ),
-
-          const SizedBox(
-            width: 11,
-          ),
-
-          const Expanded(
-            child: Column(
-              mainAxisAlignment:
-                  MainAxisAlignment
-                      .center,
-
-              crossAxisAlignment:
-                  CrossAxisAlignment
-                      .start,
-
-              children: [
-
-                Text(
-                  'Location Ready',
-
-                  style:
-                      TextStyle(
-                    fontSize: 14,
-
-                    fontWeight:
-                        FontWeight.w700,
-
-                    color:
-                        Color(
-                      0xFF15233D,
-                    ),
-                  ),
-                ),
-
-                SizedBox(
-                  height: 2,
-                ),
-
-                Text(
-                  'Ready to share your current location',
-
-                  maxLines: 1,
-
-                  overflow:
-                      TextOverflow.ellipsis,
-
-                  style:
-                      TextStyle(
-                    fontSize: 10.5,
-
-                    color:
-                        Color(
-                      0xFF718096,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          Container(
-            width: 30,
-            height: 30,
-
-            decoration:
-                const BoxDecoration(
-              shape:
-                  BoxShape.circle,
-
-              color:
-                  Color(
-                0xFF15945F,
-              ),
-            ),
-
-            child:
-                const Icon(
-              Icons.check_rounded,
-
-              size: 19,
-
-              color:
-                  Colors.white,
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -2012,37 +879,18 @@ class LocationCard
 // GLOBAL MESSAGE
 // ============================================================
 
-void showMessage(
-  BuildContext context,
-  String message,
-) {
+void showMessage(BuildContext context, String message) {
   ScaffoldMessenger.of(context)
-      .clearSnackBars();
-
-  ScaffoldMessenger.of(context)
-      .showSnackBar(
-    SnackBar(
-      content:
-          Text(message),
-
-      behavior:
-          SnackBarBehavior.floating,
-
-      margin:
-          const EdgeInsets.all(18),
-
-      shape:
-          RoundedRectangleBorder(
-        borderRadius:
-            BorderRadius.circular(
-          14,
+    ..clearSnackBars()
+    ..showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(18),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
         ),
+        duration: const Duration(seconds: 2),
       ),
-
-      duration:
-          const Duration(
-        seconds: 2,
-      ),
-    ),
-  );
+    );
 }
