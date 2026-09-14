@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'navigate_screen.dart';
 import 'emergency_screen.dart';
 import 'read_text_screen.dart';
+import 'familiar_faces_screen.dart';
 
 // ============================================================
 // HOME SCREEN
@@ -405,28 +406,33 @@ class HomeScreen extends StatelessWidget {
                                     FeatureCard(
                                   icon:
                                       Icons
-                                          .chat_bubble_outline_rounded,
+                                          .face_retouching_natural_rounded,
 
                                   iconColor:
                                       const Color(
-                                    0xFF7652D5,
+                                    0xFF1E8E3E,
                                   ),
 
                                   iconBackground:
                                       const Color(
-                                    0xFFF0E9FF,
+                                    0xFFE3F4E8,
                                   ),
 
                                   title:
-                                      'AI Assistant',
+                                      'Familiar Faces',
 
                                   subtitle:
-                                      'Ask anything',
+                                      'Recognize people',
 
                                   onTap: () {
-                                    showMessage(
+                                    Navigator.of(
                                       context,
-                                      'AI Assistant opened',
+                                    ).push(
+                                      MaterialPageRoute(
+                                        builder:
+                                            (context) =>
+                                                const FamiliarFacesScreen(),
+                                      ),
                                     );
                                   },
                                 ),

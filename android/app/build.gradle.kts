@@ -44,6 +44,13 @@ kotlin {
     }
 }
 
+// tflite_flutter 0.12.1 pulls litert-api:1.4.0 via litert-gpu, but ultralytics_yolo
+// already brings litert:2.1.5 whose AAR bundles all org.tensorflow.lite.* classes.
+// Keeping both copies trips AGP's duplicate-class check, so drop the standalone API.
+configurations.all {
+    exclude(group = "com.google.ai.edge.litert", module = "litert-api")
+}
+
 flutter {
     source = "../.."
 }

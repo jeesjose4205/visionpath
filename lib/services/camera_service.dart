@@ -41,6 +41,12 @@ class CameraService with ChangeNotifier {
   // Watchdog to detect a started-but-silent image stream.
   Timer? _streamWatchdog;
 
+  // True while an async stop is in flight. Guards the start/stop race: a
+  // screen that calls startImageStream() right after another screen disposed
+  // must wait for the outstanding stop to finish instead of reading the stale
+  // "active" flag and never actually starting the stream.
+  bool _stopInFlight = false;
+
   CameraService();
 
   /// Get the list of available cameras
@@ -203,16 +209,17 @@ class CameraService with ChangeNotifier {
       if (!ok) return false;
     }
 
+    // A previous screen may have fired an async stopImageStream() that is
+    // still draining. Wait for it so the platform stream is not silently
+    // killed by a concurrent stop right after this start returns.
+    while (_stopInFlight) {
+      await Future.delayed(const Duration(milliseconds: 25));
+    }
+
     // Keep our bookkeeping in sync with the camera package state.
     if (_controller!.value.isStreamingImages) {
       _isImageStreamActive = true;
       print('CAMERA_STREAM_ALREADY_ACTIVE');
-      _armWatchdog();
-      return true;
-    }
-
-    if (_isImageStreamActive) {
-      print('CAMERA_STREAM_FLAG_ACTIVE_RESYNC');
       _armWatchdog();
       return true;
     }
@@ -241,27 +248,33 @@ class CameraService with ChangeNotifier {
 
     if (_controller == null || !_controller!.value.isInitialized) {
       _isImageStreamActive = false;
+      _stopInFlight = false;
       return true;
     }
+
+    // Clear the active flag immediately so a concurrent startImageStream()
+    // cannot short-circuit on the stale flag while this stop is in flight.
+    _isImageStreamActive = false;
+    _stopInFlight = true;
 
     // Only invoke the platform stop when the stream is actually streaming.
     if (_controller!.value.isStreamingImages) {
       try {
         print('CAMERA_STREAM_STOP');
         await _controller!.stopImageStream();
-        _isImageStreamActive = false;
         print('CAMERA_STREAM_STOPPED');
         notifyListeners();
         return true;
       } catch (e) {
         print('CAMERA_STREAM_STOP_FAILED: $e');
-        _isImageStreamActive = false;
         notifyListeners();
         return false;
+      } finally {
+        _stopInFlight = false;
       }
     }
 
-    _isImageStreamActive = false;
+    _stopInFlight = false;
     return true;
   }
 
