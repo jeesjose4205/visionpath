@@ -37,93 +37,102 @@ class HomeScreen extends StatelessWidget {
                   // ==================================================
 
                   SizedBox(
+                    width: double.infinity,
                     height: height * 0.075,
 
-                    child: Row(
+                    child: Stack(
+                      alignment: Alignment.center,
+                      clipBehavior: Clip.none,
+
                       children: [
 
                         // LOGO
-                        Expanded(
-                          child: Column(
-                            mainAxisAlignment:
-                                MainAxisAlignment.center,
+                        Column(
+                          mainAxisAlignment:
+                              MainAxisAlignment.center,
 
-                            children: [
+                          crossAxisAlignment:
+                              CrossAxisAlignment.center,
 
-                              RichText(
-                                text: const TextSpan(
-                                  children: [
+                          children: [
 
-                                    TextSpan(
-                                      text: 'Vision',
-                                      style: TextStyle(
-                                        color:
-                                            Color(0xFF15233D),
-                                        fontSize: 24,
-                                        fontWeight:
-                                            FontWeight.w700,
-                                      ),
+                            RichText(
+                              text: const TextSpan(
+                                children: [
+
+                                  TextSpan(
+                                    text: 'Vision',
+                                    style: TextStyle(
+                                      color:
+                                          Color(0xFF15233D),
+                                      fontSize: 24,
+                                      fontWeight:
+                                          FontWeight.w700,
                                     ),
+                                  ),
 
-                                    TextSpan(
-                                      text: 'Path',
-                                      style: TextStyle(
-                                        color:
-                                            Color(0xFF1769E0),
-                                        fontSize: 24,
-                                        fontWeight:
-                                            FontWeight.w700,
-                                      ),
+                                  TextSpan(
+                                    text: 'Path',
+                                    style: TextStyle(
+                                      color:
+                                          Color(0xFF1769E0),
+                                      fontSize: 24,
+                                      fontWeight:
+                                          FontWeight.w700,
                                     ),
+                                  ),
 
-                                    TextSpan(
-                                      text: ' AI',
-                                      style: TextStyle(
-                                        color:
-                                            Color(0xFF15233D),
-                                        fontSize: 24,
-                                        fontWeight:
-                                            FontWeight.w700,
-                                      ),
+                                  TextSpan(
+                                    text: ' AI',
+                                    style: TextStyle(
+                                      color:
+                                          Color(0xFF15233D),
+                                      fontSize: 24,
+                                      fontWeight:
+                                          FontWeight.w700,
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
+                            ),
 
-                              const SizedBox(height: 2),
+                            const SizedBox(height: 2),
 
-                              const Text(
-                                'SEE BEYOND TOGETHER',
+                            const Text(
+                              'SEE BEYOND TOGETHER',
 
-                                style: TextStyle(
-                                  fontSize: 8,
-                                  fontWeight:
-                                      FontWeight.w600,
-                                  letterSpacing: 2,
-                                  color:
-                                      Color(0xFF718096),
-                                ),
+                              style: TextStyle(
+                                fontSize: 8,
+                                fontWeight:
+                                    FontWeight.w600,
+                                letterSpacing: 2,
+                                color:
+                                    Color(0xFF718096),
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
 
                         // SETTINGS
-                        HeaderButton(
-                          icon:
-                              Icons.settings_outlined,
-                          semanticLabel:
-                              'Settings',
+                        Positioned(
+                          right: -width * 0.05,
 
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    const SettingsScreen(),
-                              ),
-                            );
-                          },
+                          child: HeaderButton(
+                            icon:
+                                Icons.settings_outlined,
+                            semanticLabel:
+                                'Settings',
+
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const SettingsScreen(),
+                                ),
+                              );
+                            },
+                          ),
                         ),
                       ],
                     ),
