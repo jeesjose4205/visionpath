@@ -49,7 +49,7 @@ class FaceAnnouncementManager {
   });
 
   final int confirmFrames;
-  final Duration announceCooldown;
+  Duration announceCooldown;
   final Duration trackExpiry;
   final int maxAnnouncementsPerFrame;
 

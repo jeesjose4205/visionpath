@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../models/detected_object.dart';
 import '../models/navigation_decision.dart';
 import '../models/path_analysis.dart';
+import '../models/app_settings.dart';
 import '../services/camera_service.dart';
 import '../services/depth_analysis_service.dart';
 import '../services/instruction_manager.dart';
@@ -14,6 +15,7 @@ import '../services/navigation_service.dart';
 import '../services/object_detection_service.dart';
 import '../services/path_analysis_service.dart';
 import '../services/position_detection_service.dart';
+import '../services/settings_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/detection_overlay.dart';
 
@@ -72,12 +74,40 @@ class _NavigateScreenState extends State<NavigateScreen> {
   @override
   void initState() {
     super.initState();
+    _applySettings();
+    SettingsService.instance.addListener(_applySettings);
     _voiceService.setEnabled(_voiceGuidance);
     _initializeObjectDetection();
   }
 
+  /// Applies persisted settings to this screen's live services.
+  void _applySettings() {
+    final s = SettingsService.instance;
+    _voiceGuidance = s.voiceGuidanceEnabled &&
+        s.navigationVoiceEnabled &&
+        s.detectionVoiceEnabled;
+    setState(() {});
+    _voiceService.setEnabled(_voiceGuidance);
+    final ods = _objectDetectionService;
+    if (ods != null) {
+      ods.confidenceThreshold = s.detectionConfidenceThreshold;
+    }
+    switch (s.guidanceMode) {
+      case GuidanceMode.balanced:
+        _instructionManager.repeatCooldown = const Duration(milliseconds: 3000);
+        break;
+      case GuidanceMode.moreFrequent:
+        _instructionManager.repeatCooldown = const Duration(milliseconds: 1500);
+        break;
+      case GuidanceMode.minimal:
+        _instructionManager.repeatCooldown = const Duration(milliseconds: 6000);
+        break;
+    }
+  }
+
   @override
   void dispose() {
+    SettingsService.instance.removeListener(_applySettings);
     _inferenceTimer?.cancel();
     _instructionManager.reset();
     _voiceService.stop();
@@ -100,6 +130,11 @@ class _NavigateScreenState extends State<NavigateScreen> {
       print('NAVIGATE_INIT_SERVICES_MISSING');
       return;
     }
+
+    // Apply the persisted Detection sensitivity to the YOLO confidence
+    // threshold before the model processes any frame.
+    _objectDetectionService!.confidenceThreshold =
+        SettingsService.instance.detectionConfidenceThreshold;
 
     if (!mounted) return;
     setState(() {
@@ -277,7 +312,9 @@ class _NavigateScreenState extends State<NavigateScreen> {
 
     // Instruction Manager: suppress repeated messages.
     final bool speak = _instructionManager.shouldSpeak(decision);
-    if (speak && _voiceGuidance) {
+    if (speak &&
+        _voiceGuidance &&
+        _allowAnnouncement(decision, path.primaryBlocker)) {
       _voiceService.speak(nav.lastSpokenMessage);
     }
 
@@ -303,6 +340,92 @@ class _NavigateScreenState extends State<NavigateScreen> {
         return _NavState.danger;
     }
   }
+
+  /// Whether a navigation message for [blocker] should be spoken, honoring
+  /// the Detection category toggles and close-obstacle warnings setting.
+  bool _allowAnnouncement(NavigationDecision decision, DetectedObject? blocker) {
+    final s = SettingsService.instance;
+    if ((decision == NavigationDecision.stop ||
+            decision == NavigationDecision.slow) &&
+        !s.closeObstacleWarnings) {
+      return false;
+    }
+    if (blocker == null) return true;
+    final cls = blocker.className.toLowerCase();
+    if (cls == 'person') return s.peopleAnnouncements;
+    if (_vehicleClasses.contains(cls)) return s.vehicleAnnouncements;
+    if (_animalClasses.contains(cls)) return s.animalAnnouncements;
+    if (_furnitureClasses.contains(cls)) return s.furnitureAnnouncements;
+    return s.obstacleAnnouncements;
+  }
+
+  static const Set<String> _vehicleClasses = {
+    'car',
+    'truck',
+    'bus',
+    'bicycle',
+    'motorcycle',
+    'train',
+    'airplane',
+  };
+
+  static const Set<String> _animalClasses = {
+    'cat',
+    'dog',
+    'bird',
+    'horse',
+    'sheep',
+    'cow',
+    'elephant',
+    'bear',
+    'zebra',
+    'giraffe',
+  };
+
+  static const Set<String> _furnitureClasses = {
+    'chair',
+    'sofa',
+    'couch',
+    'table',
+    'bench',
+    'bed',
+    'refrigerator',
+    'tv',
+    'microwave',
+    'oven',
+    'toaster',
+    'sink',
+    'potted plant',
+    'book',
+    'clock',
+    'vase',
+    'bottle',
+    'bowl',
+    'cup',
+    'umbrella',
+    'backpack',
+    'handbag',
+    'suitcase',
+    'laptop',
+    'remote',
+    'keyboard',
+    'cell phone',
+    'mouse',
+    'teddy bear',
+    'wine glass',
+    'knife',
+    'spoon',
+    'fork',
+    'banana',
+    'apple',
+    'sandwich',
+    'orange',
+    'broccoli',
+    'carrot',
+    'pizza',
+    'donut',
+    'cake',
+  };
 
   void _updateDetectionFields(List<DetectedObject> detections) {
     print('NAVIGATE_RESULTS_UI: ${detections.length} objects');

@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import '../models/ocr_result.dart';
 import '../services/camera_service.dart';
 import '../services/ocr_service.dart';
+import '../services/settings_service.dart';
 import '../services/text_guidance_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/ocr_result_card.dart';
@@ -76,7 +77,18 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
   @override
   void initState() {
     super.initState();
+    _applySettings();
+    SettingsService.instance.addListener(_applySettings);
     _voice.setEnabled(_voiceEnabled);
+  }
+
+  void _applySettings() {
+    final s = SettingsService.instance;
+    _voiceEnabled = s.voiceGuidanceEnabled;
+    _voice.setEnabled(_voiceEnabled);
+    unawaited(_voice.setSpeechRate(s.speechRateValue));
+    unawaited(_voice.setVolume(s.voiceVolume));
+    unawaited(_voice.setLanguage(s.voiceLanguageTag));
   }
 
   @override
@@ -92,6 +104,7 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
 
   @override
   void dispose() {
+    SettingsService.instance.removeListener(_applySettings);
     _stopReading = true;
     _voice.stop();
     _cameraService?.setOnFrameAvailable((_) {});
@@ -190,6 +203,7 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
 
   void _announceGuidance(TextGuidance guidance) {
     if (!_voiceEnabled) return;
+    if (!SettingsService.instance.textPositionGuidance) return;
     final now = DateTime.now();
     if (_lastGuidanceVoiceAt != null &&
         now.difference(_lastGuidanceVoiceAt!) < _guidanceVoiceCooldown) {

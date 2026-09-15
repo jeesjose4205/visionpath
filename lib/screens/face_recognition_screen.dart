@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/face_detection.dart';
+import '../models/app_settings.dart';
 import '../models/object_position.dart';
 import '../services/camera_service.dart';
 import '../services/face_announcement_manager.dart';
@@ -12,6 +13,7 @@ import '../services/face_detection_service.dart';
 import '../services/face_embedding_service.dart';
 import '../services/face_recognition_service.dart';
 import '../services/familiar_face_service.dart';
+import '../services/settings_service.dart';
 import '../services/voice_service.dart';
 import '../utils/portrait_rgba.dart';
 import '../widgets/face_recognition_overlay.dart';
@@ -61,8 +63,8 @@ class _FaceRecognitionScreenState extends State<FaceRecognitionScreen> {
   void initState() {
     super.initState();
     _faceService = context.read<FamiliarFaceService>();
-    _voice.setEnabled(_voiceEnabled);
-    _annMgr.unknownAnnouncements = _unknownEnabled;
+    _applySettings();
+    SettingsService.instance.addListener(_applySettings);
     unawaited(FaceEmbeddingService.instance.ensureLoaded());
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
@@ -70,8 +72,35 @@ class _FaceRecognitionScreenState extends State<FaceRecognitionScreen> {
     });
   }
 
+  /// Applies persisted settings to this screen's live services.
+  void _applySettings() {
+    final s = SettingsService.instance;
+    _voiceEnabled = s.familiarFacesEnabled &&
+        s.familiarFaceVoice &&
+        s.voiceGuidanceEnabled;
+    setState(() {});
+    _voice.setEnabled(_voiceEnabled);
+    _unknownEnabled = s.unknownPersonAnnouncements;
+    _annMgr.unknownAnnouncements = _unknownEnabled;
+    _annMgr.announceCooldown =
+        Duration(seconds: s.familiarFaceCooldownSeconds);
+  }
+
+  /// Recognition threshold mapped from the user-facing sensitivity.
+  double get _mlThreshold {
+    switch (SettingsService.instance.familiarFaceSensitivity) {
+      case FamiliarFaceSensitivity.conservative:
+        return 0.60;
+      case FamiliarFaceSensitivity.balanced:
+        return 0.55;
+      case FamiliarFaceSensitivity.sensitive:
+        return 0.50;
+    }
+  }
+
   @override
   void dispose() {
+    SettingsService.instance.removeListener(_applySettings);
     _pumpTimer?.cancel();
     _pumpTimer = null;
     _cameraService?.setOnFrameAvailable((_) {});
@@ -160,7 +189,11 @@ class _FaceRecognitionScreenState extends State<FaceRecognitionScreen> {
           face,
         );
         if (mlEmb == null) continue;
-        final ml = FaceEmbeddingService.instance.identify(mlEmb, people);
+        final ml = FaceEmbeddingService.instance.identify(
+          mlEmb,
+          people,
+          threshold: _mlThreshold,
+        );
         match = ml == null
             ? const FaceRecognitionResult.unknown()
             : FaceRecognitionResult.known(

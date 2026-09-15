@@ -16,6 +16,10 @@ class VoiceService {
   bool _enabled = false;
   bool _speaking = false;
 
+  double _speechRate = 0.5;
+  double _volume = 1.0;
+  String _language = 'en-US';
+
   int _pendingChunks = 0;
   bool _queueModeAdd = false;
   void Function()? _readingDone;
@@ -27,11 +31,57 @@ class VoiceService {
   /// Whether TTS is currently speaking (approximate; re-fires on stop).
   bool get isSpeaking => _speaking;
 
+  /// Currently configured speech rate (0.0–1.0).
+  double get speechRate => _speechRate;
+
+  /// Currently configured volume (0.0–1.0).
+  double get volume => _volume;
+
+  /// Currently configured TTS language tag (e.g. `en-US`).
+  String get language => _language;
+
   /// Enable/disable voice guidance.
   void setEnabled(bool value) {
     _enabled = value;
     if (!value) {
       stop();
+    }
+  }
+
+  /// Configure the speech rate. Applies immediately if the engine is ready
+  /// and is applied on (re)initialization otherwise.
+  Future<void> setSpeechRate(double value) async {
+    _speechRate = value.clamp(0.0, 1.0);
+    if (_initialized && _tts != null) {
+      try {
+        await _tts!.setSpeechRate(_speechRate);
+      } catch (e) {
+        print('VOICE_SET_RATE_FAILED: $e');
+      }
+    }
+  }
+
+  /// Configure the output volume. Applies immediately if ready.
+  Future<void> setVolume(double value) async {
+    _volume = value.clamp(0.0, 1.0);
+    if (_initialized && _tts != null) {
+      try {
+        await _tts!.setVolume(_volume);
+      } catch (e) {
+        print('VOICE_SET_VOLUME_FAILED: $e');
+      }
+    }
+  }
+
+  /// Configure the TTS language tag. Applies immediately if ready.
+  Future<void> setLanguage(String languageTag) async {
+    _language = languageTag;
+    if (_initialized && _tts != null) {
+      try {
+        await _tts!.setLanguage(_language);
+      } catch (e) {
+        print('VOICE_SET_LANGUAGE_FAILED: $e');
+      }
     }
   }
 
@@ -41,9 +91,9 @@ class VoiceService {
     try {
       _tts = FlutterTts();
       await _tts!.awaitSynthCompletion(true);
-      await _tts!.setLanguage('en-US');
-      await _tts!.setSpeechRate(0.5);
-      await _tts!.setVolume(1.0);
+      await _tts!.setLanguage(_language);
+      await _tts!.setSpeechRate(_speechRate);
+      await _tts!.setVolume(_volume);
       await _tts!.setPitch(1.0);
       _tts!.setErrorHandler((message) {
         print('VOICE_TTS_ERROR_HANDLER: $message');
@@ -52,7 +102,7 @@ class VoiceService {
       _tts!.setCompletionHandler(_onUtteranceComplete);
       _tts!.setCancelHandler(_onUtteranceCancel);
       _initialized = true;
-      print('VOICE_INITIALIZED');
+      print('VOICE_INITIALIZED rate=$_speechRate vol=$_volume lang=$_language');
     } catch (e) {
       print('VOICE_INIT_FAILED: $e');
       _initialized = false;

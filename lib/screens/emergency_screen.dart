@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../models/emergency_contact.dart';
 import '../services/emergency_contact_service.dart';
+import '../services/settings_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/emergency_contact_card.dart';
 import '../widgets/emergency_location_card.dart';
@@ -31,6 +32,8 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     3: 'three',
     4: 'four',
     5: 'five',
+    6: 'six',
+    7: 'seven',
   };
 
   final EmergencyContactService _contactService = EmergencyContactService();
@@ -38,14 +41,28 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
 
   bool _voiceEnabled = true;
   _SosStatus _status = _SosStatus.ready;
+  int _holdSeconds = 5;
   int _countdown = 5;
 
   @override
   void initState() {
     super.initState();
+    _applySettings();
+    SettingsService.instance.addListener(_applySettings);
     _voice.setEnabled(_voiceEnabled);
     _contactService.addListener(_onContactsChanged);
     _loadContacts();
+  }
+
+  void _applySettings() {
+    final s = SettingsService.instance;
+    _voiceEnabled = s.voiceGuidanceEnabled;
+    _holdSeconds = s.sosHoldDurationSeconds;
+    _countdown = s.sosHoldDurationSeconds;
+    _voice.setEnabled(_voiceEnabled);
+    unawaited(_voice.setSpeechRate(s.speechRateValue));
+    unawaited(_voice.setVolume(s.voiceVolume));
+    unawaited(_voice.setLanguage(s.voiceLanguageTag));
   }
 
   void _onContactsChanged() {
@@ -60,6 +77,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
 
   @override
   void dispose() {
+    SettingsService.instance.removeListener(_applySettings);
     _contactService.removeListener(_onContactsChanged);
     _voice.setEnabled(false);
     unawaited(_voice.dispose());
@@ -78,8 +96,8 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
       _status = _SosStatus.activating;
       _countdown = remaining;
     });
-    if (remaining == 5) {
-      _voice.speak('Emergency activation in five seconds.');
+    if (remaining == _holdSeconds) {
+      _voice.speak('Emergency activation in $_holdSeconds seconds.');
     } else {
       _voice.speak(_numberWords[remaining] ?? '$remaining');
     }
@@ -90,7 +108,13 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     setState(() => _status = _SosStatus.activated);
     _voice.speak('SOS activated.');
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _showContactSheet();
+      if (!mounted) return;
+      final contacts = _contactService.contacts;
+      if (!SettingsService.instance.sosConfirmation && contacts.isNotEmpty) {
+        _callContact(contacts.first);
+      } else {
+        _showContactSheet();
+      }
     });
   }
 
@@ -98,7 +122,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     if (!mounted) return;
     setState(() {
       _status = _SosStatus.ready;
-      _countdown = 5;
+      _countdown = _holdSeconds;
     });
     _voice.speak('SOS cancelled.');
     showMessage(context, 'SOS cancelled.');
@@ -108,7 +132,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     if (!mounted) return;
     setState(() {
       _status = _SosStatus.ready;
-      _countdown = 5;
+      _countdown = _holdSeconds;
     });
     _voice.speak('SOS deactivated. Stay safe.');
     showMessage(context, 'SOS reset.');

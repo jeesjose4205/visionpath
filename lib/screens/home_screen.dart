@@ -3,6 +3,7 @@ import 'navigate_screen.dart';
 import 'emergency_screen.dart';
 import 'read_text_screen.dart';
 import 'familiar_faces_screen.dart';
+import 'settings_screen.dart';
 
 // ============================================================
 // HOME SCREEN
@@ -40,19 +41,6 @@ class HomeScreen extends StatelessWidget {
 
                     child: Row(
                       children: [
-
-                        // MENU
-                        HeaderButton(
-                          icon: Icons.menu_rounded,
-                          semanticLabel: 'Menu',
-
-                          onTap: () {
-                            showMessage(
-                              context,
-                              'Menu',
-                            );
-                          },
-                        ),
 
                         // LOGO
                         Expanded(
@@ -128,9 +116,12 @@ class HomeScreen extends StatelessWidget {
                               'Settings',
 
                           onTap: () {
-                            showMessage(
+                            Navigator.push(
                               context,
-                              'Accessibility Settings',
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    const SettingsScreen(),
+                              ),
                             );
                           },
                         ),

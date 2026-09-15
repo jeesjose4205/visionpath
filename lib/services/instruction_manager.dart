@@ -8,8 +8,9 @@ import '../models/navigation_decision.dart';
 /// 2. The danger level increased (e.g., FORWARD -> STOP).
 /// 3. Enough time has passed since the last instruction (repeat guard).
 class InstructionManager {
-  /// Minimum interval between repeated instructions.
-  static const Duration repeatCooldown = Duration(milliseconds: 3000);
+  /// Minimum interval between repeated instructions. Mutable so the
+  /// Navigation "Guidance Frequency" setting can tune it.
+  Duration repeatCooldown = const Duration(milliseconds: 3000);
 
   /// Escalations below this interval bypass the repeat cooldown.
   static const Duration escalationMinimumGap = Duration(milliseconds: 1200);

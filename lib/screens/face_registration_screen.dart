@@ -12,6 +12,7 @@ import '../services/face_embedding_service.dart';
 import '../services/face_recognition_service.dart';
 import '../services/face_registration_guide.dart';
 import '../services/familiar_face_service.dart';
+import '../services/settings_service.dart';
 import '../services/voice_service.dart';
 import '../utils/portrait_rgba.dart';
 
@@ -90,12 +91,22 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
   void initState() {
     super.initState();
     _faceService = context.read<FamiliarFaceService>();
-    _voice.setEnabled(true);
+    _applyVoiceSettings();
+    SettingsService.instance.addListener(_applyVoiceSettings);
     unawaited(FaceEmbeddingService.instance.ensureLoaded());
+  }
+
+  void _applyVoiceSettings() {
+    final s = SettingsService.instance;
+    _voice.setEnabled(s.voiceGuidanceEnabled);
+    unawaited(_voice.setSpeechRate(s.speechRateValue));
+    unawaited(_voice.setVolume(s.voiceVolume));
+    unawaited(_voice.setLanguage(s.voiceLanguageTag));
   }
 
   @override
   void dispose() {
+    SettingsService.instance.removeListener(_applyVoiceSettings);
     _pumpTimer?.cancel();
     _pumpTimer = null;
     _teardownControllerAsync();
