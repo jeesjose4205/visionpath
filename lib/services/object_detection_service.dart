@@ -17,6 +17,7 @@ class ObjectDetectionService with ChangeNotifier {
   String? _errorMessage;
   List<DetectedObject> _currentObjects = [];
   double _confidenceThreshold = 0.40;
+  Size? _detectionInputSize;
 
   ObjectDetectionService();
 
@@ -39,6 +40,13 @@ class ObjectDetectionService with ChangeNotifier {
 
   /// Get current detected objects (with position info)
   List<DetectedObject> get currentResults => _currentObjects;
+
+  /// Size of the frame the [currentResults] bounding boxes are normalized to.
+  ///
+  /// This is the CameraImage after the sensor rotation is applied (the same
+  /// orientation the camera preview is shown in). Null until the first frame
+  /// has been processed.
+  Size? get detectionInputSize => _detectionInputSize;
 
   /// Load the YOLO26n model
   Future<bool> initialize() async {
@@ -159,8 +167,9 @@ class ObjectDetectionService with ChangeNotifier {
     int inputRotationQuarterTurns = 0,
   }) async {
     print('INFERENCE_START');
-    print('INFERENCE_IMAGE_SIZE: ${image.width}x${image.height}');
-    print('FRAME_INPUT_ROTATION_QUARTER_TURNS: $inputRotationQuarterTurns');
+    print('SOURCE_IMAGE_WIDTH: ${image.width}');
+    print('SOURCE_IMAGE_HEIGHT: ${image.height}');
+    print('IMAGE_ROTATION: $inputRotationQuarterTurns');
 
     final bytes = await _convertCameraImageToBytes(
       image,
@@ -241,6 +250,10 @@ class ObjectDetectionService with ChangeNotifier {
       }
       print('YOLO_ROTATED_INPUT_SIZE: ${rgbWidth}x$rgbHeight');
     }
+
+    print('YOLO_INPUT_WIDTH: $rgbWidth');
+    print('YOLO_INPUT_HEIGHT: $rgbHeight');
+    _detectionInputSize = Size(rgbWidth.toDouble(), rgbHeight.toDouble());
 
     // Pad RGB -> RGBA so the frame can be handed to the engine as a pixels
     // buffer, then encode PNG for the native BitmapFactory decoder.

@@ -17,6 +17,7 @@ import '../services/path_analysis_service.dart';
 import '../services/position_detection_service.dart';
 import '../services/settings_service.dart';
 import '../services/voice_service.dart';
+import '../widgets/camera_preview_fit.dart';
 import '../widgets/detection_overlay.dart';
 
 /// Navigate screen - camera-based visual navigation assistance.
@@ -637,7 +638,7 @@ class _NavigateScreenState extends State<NavigateScreen> {
                     fit: StackFit.expand,
                     children: [
                       // Single camera preview (same controller as the stream).
-                      CameraPreview(cameraService.controller!),
+                      CameraPreviewFit(controller: cameraService.controller!),
 
                       // Detection overlay with bounding boxes + labels.
                       if (_navState != _NavState.idle &&
@@ -648,6 +649,9 @@ class _NavigateScreenState extends State<NavigateScreen> {
                             print('OVERLAY_CONSUMER_OBJECT_COUNT: ${ods.currentResults.length}');
                             return DetectionOverlay(
                               previewSize: MediaQuery.of(context).size,
+                              inputSize: displayPreviewSize(
+                                cameraService.controller!,
+                              ),
                               results: ods.currentResults,
                             );
                           },

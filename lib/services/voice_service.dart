@@ -25,6 +25,9 @@ class VoiceService {
   void Function()? _readingDone;
   Timer? _readingWatchdog;
 
+  /// Invoked when a fire-and-forget [speak] utterance finishes (or is stopped).
+  void Function()? onSpeakCompleted;
+
   /// Whether voice guidance is enabled.
   bool get enabled => _enabled;
 
@@ -129,6 +132,7 @@ class VoiceService {
       print('VOICE_SPEAK_FAILED: $e');
     } finally {
       _speaking = false;
+      onSpeakCompleted?.call();
     }
   }
 

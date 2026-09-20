@@ -3,6 +3,7 @@ import 'navigate_screen.dart';
 import 'emergency_screen.dart';
 import 'read_text_screen.dart';
 import 'familiar_faces_screen.dart';
+import 'look_and_detect_screen.dart';
 import 'settings_screen.dart';
 
 // ============================================================
@@ -199,9 +200,11 @@ class HomeScreen extends StatelessWidget {
                     child: Center(
                       child: GestureDetector(
                         onTap: () {
-                          showMessage(
+                          Navigator.push(
                             context,
-                            'Camera activated',
+                            MaterialPageRoute(
+                              builder: (_) => const LookAndDetectScreen(),
+                            ),
                           );
                         },
 

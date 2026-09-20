@@ -84,6 +84,53 @@ class CameraService with ChangeNotifier {
     }
   }
 
+  /// Whether the currently selected camera faces the back.
+  bool get isRearFacing => _camera?.lensDirection == CameraLensDirection.back;
+
+  /// Switch between the rear and front camera. The image stream is stopped and
+  /// restarted when it was running, and the frame callback installed via
+  /// [setOnFrameAvailable] is preserved so inference resumes seamlessly.
+  Future<bool> flipCamera() async {
+    final targetBack = !isRearFacing;
+    final wasStreaming = _controller?.value.isStreamingImages ?? false;
+
+    // Tear down the current controller cleanly.
+    _streamWatchdog?.cancel();
+    _streamWatchdog = null;
+    _isImageStreamActive = false;
+    if (_controller != null) {
+      try {
+        if (_controller!.value.isStreamingImages) {
+          await _controller!.stopImageStream();
+        }
+        await _controller!.dispose();
+      } catch (e) {
+        print('CAMERA_FLIP_TEARDOWN_FAILED: $e');
+      }
+      _controller = null;
+    }
+    _camera = null;
+
+    final cameras = await getAvailableCameras();
+    if (cameras.isEmpty) {
+      _errorMessage = 'No cameras available';
+      notifyListeners();
+      return false;
+    }
+    _camera = cameras.firstWhere(
+      (c) => (c.lensDirection == CameraLensDirection.back) == targetBack,
+      orElse: () => cameras.first,
+    );
+    print('CAMERA_FLIP_SELECTED: ${_camera!.lensDirection}');
+
+    final bool ok = await initializeController();
+    if (!ok) return false;
+    if (wasStreaming) {
+      return await startImageStream();
+    }
+    return true;
+  }
+
   /// Initialize the single CameraController. The image stream is NOT started
   /// here; call [startImageStream] after setting the frame callback so the
   /// callback-linkage can never be missed.
@@ -121,8 +168,13 @@ class CameraService with ChangeNotifier {
 
       await _controller!.initialize();
       print('CAMERA_INIT_SUCCESS');
+      print('CAMERA_LENS_DIRECTION: ${_controller!.description.lensDirection}');
       print('CAMERA_SENSOR_ORIENTATION: ${_controller!.description.sensorOrientation}');
       print('CAMERA_PREVIEW_SIZE: ${_controller!.value.previewSize}');
+      print('CAMERA_ASPECT_RATIO: ${_controller!.value.aspectRatio}');
+      print('CAMERA_DEVICE_ORIENTATION: ${_controller!.value.deviceOrientation}');
+      print('CAMERA_RECORDING_ORIENTATION: ${_controller!.value.recordingOrientation}');
+      print('CAMERA_LOCKED_CAPTURE_ORIENTATION: ${_controller!.value.lockedCaptureOrientation}');
       print('CAMERA_IMAGE_ROTATION_QUARTER_TURNS: $imageRotationQuarterTurns');
 
       _isInitializing = false;

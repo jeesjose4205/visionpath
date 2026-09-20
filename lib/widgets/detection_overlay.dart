@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../models/detected_object.dart';
@@ -7,13 +9,28 @@ class DetectionOverlay extends StatelessWidget {
   /// The camera preview size
   final Size previewSize;
 
+  /// Size of the upright-frame the normalized [DetectedObject] boxes are
+  /// relative to, in DISPLAY space (matches what the preview shows; see
+  /// [camera_preview_fit.dart]'s displayPreviewSize). When null, falls back to
+  /// the rotated [previewSize].
+  final Size? inputSize;
+
   /// Detected objects to draw
   final List<DetectedObject> results;
+
+  /// Show the confidence percentage on the label (default true).
+  final bool showConfidence;
+
+  /// Append the horizontal position (LEFT / CENTER / RIGHT) to the label.
+  final bool showPosition;
 
   /// Create a DetectionOverlay
   const DetectionOverlay({
     required this.previewSize,
+    this.inputSize,
     required this.results,
+    this.showConfidence = true,
+    this.showPosition = false,
   });
 
   @override
@@ -30,7 +47,10 @@ class DetectionOverlay extends StatelessWidget {
     return CustomPaint(
       painter: _DetectionPainter(
         previewSize: previewSize,
+        inputSize: inputSize,
         results: results,
+        showConfidence: showConfidence,
+        showPosition: showPosition,
       ),
     );
   }
@@ -39,11 +59,17 @@ class DetectionOverlay extends StatelessWidget {
 /// Painter that draws detection bounding boxes and labels.
 class _DetectionPainter extends CustomPainter {
   final Size previewSize;
+  final Size? inputSize;
   final List<DetectedObject> results;
+  final bool showConfidence;
+  final bool showPosition;
 
   _DetectionPainter({
     required this.previewSize,
+    this.inputSize,
     required this.results,
+    this.showConfidence = true,
+    this.showPosition = false,
   });
 
   @override
@@ -51,8 +77,6 @@ class _DetectionPainter extends CustomPainter {
     print('DetectionOverlay._DetectionPainter.paint: Size=$size, Results count=${results.length}');
 
     if (results.isEmpty) return;
-
-    print('DetectionOverlay._DetectionPainter.paint: Drawing ${results.length} bounding boxes');
 
     final paint = Paint()
       ..color = const Color(0xFF1769E0)
@@ -66,22 +90,56 @@ class _DetectionPainter extends CustomPainter {
       color: Colors.white,
     );
 
-    for (final result in results) {
-      print('DetectionOverlay._DetectionPainter.paint: Drawing result: ${result.displayName} (${result.confidence * 100}%)');
+    // Normalized boxes are relative to the upright detection frame, whose
+    // display size is [sourceSize] (see camera_preview_fit.dart). The overlay
+    // canvas covers the same area as the preview widget, which fills that area
+    // with a uniform cover fit: both axes scaled by the same factor and the
+    // overflow cropped symmetrically. Applying the same scale + offset here
+    // keeps every box glued to the visible video geometry.
+    final Size sourceSize = inputSize ?? Size(previewSize.height, previewSize.width);
 
+    print('DetectionOverlay._DetectionPainter.paint: PREVIEW_WIDTH=$size.width');
+    print('DetectionOverlay._DetectionPainter.paint: PREVIEW_HEIGHT=${size.height}');
+
+    final double scale = math.max(
+      size.width / sourceSize.width,
+      size.height / sourceSize.height,
+    );
+    final double fittedWidth = sourceSize.width * scale;
+    final double fittedHeight = sourceSize.height * scale;
+    final double offsetX = (size.width - fittedWidth) / 2;
+    final double offsetY = (size.height - fittedHeight) / 2;
+
+    print('DetectionOverlay._DetectionPainter.paint: SCALE=$scale');
+    print('DetectionOverlay._DetectionPainter.paint: OFFSET_X=$offsetX');
+    print('DetectionOverlay._DetectionPainter.paint: OFFSET_Y=$offsetY');
+
+    for (final result in results) {
       final box = result.boundingBox;
 
-      print('DetectionOverlay._DetectionPainter.paint: Normalized box: ${box}');
+      final rawLeft = box.left;
+      final rawTop = box.top;
+      final rawRight = box.right;
+      final rawBottom = box.bottom;
 
-      // TEMPORARY simple mapping for debugging: scale the normalized YOLO box
-      // directly by the canvas size. Coordinate transformation is intentionally
-      // not applied until detections are proven on-device.
-      final left = box.left * size.width;
-      final top = box.top * size.height;
-      final right = box.right * size.width;
-      final bottom = box.bottom * size.height;
+      print('DetectionOverlay._DetectionPainter.paint: RAW_BOX_LEFT=$rawLeft');
+      print('DetectionOverlay._DetectionPainter.paint: RAW_BOX_TOP=$rawTop');
+      print('DetectionOverlay._DetectionPainter.paint: RAW_BOX_RIGHT=$rawRight');
+      print('DetectionOverlay._DetectionPainter.paint: RAW_BOX_BOTTOM=$rawBottom');
+      print('DetectionOverlay._DetectionPainter.paint: RAW_BOX_WIDTH=${rawRight - rawLeft}');
+      print('DetectionOverlay._DetectionPainter.paint: RAW_BOX_HEIGHT=${rawBottom - rawTop}');
 
-      print('DetectionOverlay._DetectionPainter.paint: Pixel coordinates: left=$left, top=$top, right=$right, bottom=$bottom');
+      final left = offsetX + box.left * fittedWidth;
+      final top = offsetY + box.top * fittedHeight;
+      final right = offsetX + box.right * fittedWidth;
+      final bottom = offsetY + box.bottom * fittedHeight;
+
+      print('DetectionOverlay._DetectionPainter.paint: DISPLAY_BOX_LEFT=$left');
+      print('DetectionOverlay._DetectionPainter.paint: DISPLAY_BOX_TOP=$top');
+      print('DetectionOverlay._DetectionPainter.paint: DISPLAY_BOX_RIGHT=$right');
+      print('DetectionOverlay._DetectionPainter.paint: DISPLAY_BOX_BOTTOM=$bottom');
+      print('DetectionOverlay._DetectionPainter.paint: DISPLAY_BOX_WIDTH=${right - left}');
+      print('DetectionOverlay._DetectionPainter.paint: DISPLAY_BOX_HEIGHT=${bottom - top}');
 
       // Draw bounding box
       canvas.drawRect(
@@ -89,10 +147,13 @@ class _DetectionPainter extends CustomPainter {
         paint,
       );
 
-      // Get horizontal position from DetectedObject (for potential future use)
-
       // Draw label below bounding box (not above)
-      final label = '${result.displayName} ${(_formatConfidence(result.confidence))}';
+      final String posLabel = showPosition && result.position != null
+          ? '   ${result.position!.label}'
+          : '';
+      final String confLabel =
+          showConfidence ? ' ${(_formatConfidence(result.confidence))}' : '';
+      final label = '${result.displayName}$posLabel$confLabel';
 
       final textPainter = TextPainter(
         text: TextSpan(text: label, style: style),
@@ -127,6 +188,6 @@ class _DetectionPainter extends CustomPainter {
   @override
   bool shouldRepaint(_DetectionPainter oldDelegate) {
     print('DetectionOverlay._DetectionPainter.shouldRepaint: ${oldDelegate.results != results}');
-    return oldDelegate.results != results;
+    return oldDelegate.results != results || oldDelegate.inputSize != inputSize;
   }
 }

@@ -21,13 +21,28 @@ dependencies:
   google_mlkit_face_detection: ^0.15.1
   tflite_flutter: ^0.12.1
   package_info_plus: ^8.0.0
+  vosk_flutter:
+    path: third_party/vosk_flutter
+  permission_handler: 10.2.0
+  flutter_inappwebview: ^6.1.5
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+# Vendored fixes for plugins that cannot build under this project's AGP 9:
+#  - vosk_flutter pins an ancient permission_handler using removed
+#    Flutter v1-embedding APIs (so also override permission_handler itself).
+#  - flutter_inappwebview_android still calls the removed
+#    'proguard-android.txt' keep file.
+dependency_overrides:
+  permission_handler: 11.3.1
+  flutter_inappwebview_android:
+    path: third_party/flutter_inappwebview_android
+
 flutter:
   uses-material-design: true
   assets:
     - assets/ml/mobilefacenet.tflite
+    - assets/models/vosk-model-small-en-us-0.15.zip

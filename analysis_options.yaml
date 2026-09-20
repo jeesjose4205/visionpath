@@ -18,6 +18,8 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    # Vendored third-party plugin sources are not part of this project.
+    - third_party/**
 
 linter:
   # The lint rules applied to this project can be customized in the
