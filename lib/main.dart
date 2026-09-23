@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'models/app_settings.dart';
-import 'screens/home_screen.dart';
+import 'screens/navigate_screen.dart';
 import 'services/camera_service.dart';
 import 'services/depth_analysis_service.dart';
 import 'services/familiar_face_service.dart';
@@ -12,6 +12,7 @@ import 'services/object_detection_service.dart';
 import 'services/path_analysis_service.dart';
 import 'services/position_detection_service.dart';
 import 'services/settings_service.dart';
+import 'widgets/sos_gesture.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,8 +56,16 @@ class VisionPathApp extends StatelessWidget {
   }
 }
 
-class _AppRoot extends StatelessWidget {
+class _AppRoot extends StatefulWidget {
   const _AppRoot();
+
+  @override
+  State<_AppRoot> createState() => _AppRootState();
+}
+
+class _AppRootState extends State<_AppRoot> {
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  final SosRouteObserver _sosObserver = SosRouteObserver();
 
   @override
   Widget build(BuildContext context) {
@@ -64,6 +73,15 @@ class _AppRoot extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'VisionPath AI',
+      navigatorKey: _navigatorKey,
+      navigatorObservers: [_sosObserver],
+      // Global gesture layer above every routed screen: a deliberate
+      // bottom-to-top swipe opens the existing emergency SOS screen.
+      builder: (context, child) => SosGestureOverlay(
+        navigatorKey: _navigatorKey,
+        observer: _sosObserver,
+        child: child ?? const SizedBox.shrink(),
+      ),
       theme: _lightTheme,
       darkTheme: _darkTheme,
       themeMode: theme == AppThemePreference.dark
@@ -71,7 +89,19 @@ class _AppRoot extends StatelessWidget {
           : theme == AppThemePreference.light
               ? ThemeMode.light
               : ThemeMode.system,
-      home: const HomeScreen(),
+      // Fallback for any named/unknown route lookups (the launch stack and all
+      // screen pushes use explicit routes, so this only fires defensively).
+      onGenerateRoute: (settings) => MaterialPageRoute<void>(
+        settings: settings,
+        builder: (_) => const NavigateScreen(),
+      ),
+      // The app opens straight into the Navigate (camera guidance) screen.
+      onGenerateInitialRoutes: (initialRouteName) => <Route<dynamic>>[
+        MaterialPageRoute<void>(
+          settings: RouteSettings(name: initialRouteName),
+          builder: (_) => const NavigateScreen(),
+        ),
+      ],
     );
   }
 }

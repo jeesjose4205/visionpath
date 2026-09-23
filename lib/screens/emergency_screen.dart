@@ -56,13 +56,14 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
 
   void _applySettings() {
     final s = SettingsService.instance;
-    _voiceEnabled = s.voiceGuidanceEnabled;
+    _voiceEnabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted;
     _holdSeconds = s.sosHoldDurationSeconds;
     _countdown = s.sosHoldDurationSeconds;
     _voice.setEnabled(_voiceEnabled);
     unawaited(_voice.setSpeechRate(s.speechRateValue));
     unawaited(_voice.setVolume(s.voiceVolume));
     unawaited(_voice.setLanguage(s.voiceLanguageTag));
+    if (mounted) setState(() {});
   }
 
   void _onContactsChanged() {
@@ -85,9 +86,9 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   }
 
   void _toggleVoice() {
-    setState(() => _voiceEnabled = !_voiceEnabled);
-    _voice.setEnabled(_voiceEnabled);
-    if (_voiceEnabled) _voice.speak('Voice prompts enabled.');
+    SettingsService.instance.setGlobalVoiceMuted(
+      !SettingsService.instance.globalVoiceMuted,
+    );
   }
 
   void _onTick(int remaining) {

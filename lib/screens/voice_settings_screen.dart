@@ -24,10 +24,7 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
   void initState() {
     super.initState();
     final s = SettingsService.instance;
-    _voice.setEnabled(s.voiceGuidanceEnabled);
-    unawaited(_voice.setSpeechRate(s.speechRateValue));
-    unawaited(_voice.setVolume(s.voiceVolume));
-    unawaited(_voice.setLanguage(s.voiceLanguageTag));
+    _voice.setEnabled(s.voiceGuidanceEnabled && !s.globalVoiceMuted);
     SettingsService.instance.addListener(_onSettingsChanged);
   }
 
@@ -40,7 +37,7 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
 
   void _onSettingsChanged() {
     final s = SettingsService.instance;
-    _voice.setEnabled(s.voiceGuidanceEnabled);
+    _voice.setEnabled(s.voiceGuidanceEnabled && !s.globalVoiceMuted);
     unawaited(_voice.setSpeechRate(s.speechRateValue));
     unawaited(_voice.setVolume(s.voiceVolume));
     unawaited(_voice.setLanguage(s.voiceLanguageTag));

@@ -71,6 +71,20 @@ class LookAndDetectEngine extends ChangeNotifier {
   /// The last answer given to a user query.
   String get lastResponse => _lastResponse;
 
+  /// The YOLO class the most recent query asked about (e.g. "chair"), or
+  /// null when the query was not about a specific object.
+  String? get lastTopicClass => _lastTopicClass;
+
+  /// The nearest currently detected instance of [className], or null when it
+  /// is not in the current scene. Used to surface detection results visually.
+  SceneObject? primaryFor(String className) {
+    final matches = _current
+        .where((o) => o.className.toLowerCase() == className.toLowerCase())
+        .toList();
+    if (matches.isEmpty) return null;
+    return _primaryInstance(matches);
+  }
+
   static const Map<int, String> _numWords = {
     1: 'one',
     2: 'two',

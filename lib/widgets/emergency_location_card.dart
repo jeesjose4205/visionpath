@@ -54,9 +54,12 @@ class EmergencyLocationCard extends StatelessWidget {
                 children: [
                   Text(
                     'Location status',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: Color(0xFF15233D),
                       fontSize: 14,
+                      height: 1.3,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -67,6 +70,7 @@ class EmergencyLocationCard extends StatelessWidget {
                     style: TextStyle(
                       color: Color(0xFF718096),
                       fontSize: 12,
+                      height: 1.3,
                     ),
                   ),
                 ],

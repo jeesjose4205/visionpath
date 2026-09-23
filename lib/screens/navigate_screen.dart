@@ -19,6 +19,9 @@ import '../services/settings_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/detection_overlay.dart';
+import '../widgets/settings_button.dart';
+import 'familiar_faces_screen.dart';
+import 'read_text_screen.dart';
 
 /// Navigate screen - camera-based visual navigation assistance.
 ///
@@ -49,9 +52,22 @@ class NavigateScreen extends StatefulWidget {
   State<NavigateScreen> createState() => _NavigateScreenState();
 }
 
-class _NavigateScreenState extends State<NavigateScreen> {
+class _NavigateScreenState extends State<NavigateScreen>
+    with SingleTickerProviderStateMixin {
   _NavState _navState = _NavState.idle;
   bool _voiceGuidance = true;
+  DateTime _greetingGuardUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // ------------------------------------------------------------
+  // INTRODUCTORY TITLE CARD
+  // ------------------------------------------------------------
+  //
+  // The title card covers the camera rectangle when the screen is opened and
+  // again after each STOP NAVIGATION, and fades out to reveal the live
+  // preview when START NAVIGATION is pressed.
+
+  bool _showIntroCard = true;
+  late final AnimationController _introController;
 
   String _detectionStatus = '';
   String _detectedObject = 'No objects detected';
@@ -72,23 +88,116 @@ class _NavigateScreenState extends State<NavigateScreen> {
   ObjectDetectionService? _objectDetectionService;
   NavigationService? _navigationService;
 
+  // ------------------------------------------------------------
+  // SWIPE NAVIGATION (this screen is the main/centre page)
+  // ------------------------------------------------------------
+  //
+  // Swipe LEFT  -> Familiar Faces
+  // Swipe RIGHT -> Read Text
+  // Both pages pop back here, and Android back returns to Home underneath.
+
+  double _swipeDx = 0;
+  bool _swipeNavLocked = false;
+
+  void _onSwipeStart(DragStartDetails details) {
+    _swipeDx = 0;
+  }
+
+  void _onSwipeUpdate(DragUpdateDetails details) {
+    _swipeDx += details.delta.dx;
+  }
+
+  void _onSwipeEnd(DragEndDetails details) {
+    if (_swipeNavLocked || !mounted) return;
+
+    final velocity = details.primaryVelocity ?? 0;
+    final distance = _swipeDx;
+
+    // Ignore tiny horizontal movements and accidental vertical gestures.
+    if (velocity.abs() < 300 && distance.abs() < 80) return;
+
+    final direction = velocity != 0 ? velocity : distance;
+    _pushSide(direction < 0);
+  }
+
+  /// Opens the page on the chosen side with a subtle horizontal slide.
+  /// Locked while a page is up so one swipe can never trigger twice.
+  Future<void> _pushSide(bool fromRight) async {
+    if (_swipeNavLocked || !mounted) return;
+
+    final Widget screen = fromRight
+        ? const FamiliarFacesScreen()
+        : const ReadTextScreen();
+
+    _swipeNavLocked = true;
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        transitionDuration: const Duration(milliseconds: 260),
+        reverseTransitionDuration: const Duration(milliseconds: 220),
+        pageBuilder: (context, animation, secondaryAnimation) => screen,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          final offset = Tween<Offset>(
+            begin: Offset(fromRight ? 1 : -1, 0),
+            end: Offset.zero,
+          ).chain(CurveTween(curve: Curves.easeOutCubic));
+          return SlideTransition(
+            position: animation.drive(offset),
+            child: child,
+          );
+        },
+      ),
+    );
+    // The pop future resolves immediately, but the popped screen still runs
+    // dispose() -> _voice.stop() ~220ms later (after its exit animation).
+    // flutter_tts shares ONE native engine, so that stop would cut the
+    // greeting off mid-word ("nav..."). Wait until the old screen has fully
+    // torn down before announcing the return, keeping the swipe lock held.
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    _swipeNavLocked = false;
+    if (mounted) _speakNavigationGreeting();
+  }
+
+  void _speakNavigationGreeting() {
+    // The greeting announces which screen is open. It follows the global
+    // voice switch (and the on-screen speaker mute) exactly like Read Text
+    // and Familiar Faces, NOT the Navigation/Detection voice sub-toggles.
+    if (!_voiceService.enabled) return;
+    // Give the greeting the floor briefly so live guidance can't cut it off
+    // the instant the screen opens or is returned to.
+    _greetingGuardUntil =
+        DateTime.now().add(const Duration(milliseconds: 5000));
+    _voiceService.speak(
+      'Navigation. Navigate safely with real-time obstacle detection '
+      'and voice guidance.',
+    );
+  }
+
   @override
   void initState() {
     super.initState();
     _applySettings();
     SettingsService.instance.addListener(_applySettings);
-    _voiceService.setEnabled(_voiceGuidance);
     _initializeObjectDetection();
+    _introController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 460),
+    )..forward();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _speakNavigationGreeting();
+    });
   }
 
   /// Applies persisted settings to this screen's live services.
   void _applySettings() {
     final s = SettingsService.instance;
+    // Navigation/Detection voice toggles gate LIVE obstacle guidance only;
+    // the on-screen greeting still respects the global voice switch.
     _voiceGuidance = s.voiceGuidanceEnabled &&
         s.navigationVoiceEnabled &&
         s.detectionVoiceEnabled;
     setState(() {});
-    _voiceService.setEnabled(_voiceGuidance);
+    _voiceService.setEnabled(
+        s.voiceGuidanceEnabled && !s.globalVoiceMuted);
     final ods = _objectDetectionService;
     if (ods != null) {
       ods.confidenceThreshold = s.detectionConfidenceThreshold;
@@ -110,6 +219,7 @@ class _NavigateScreenState extends State<NavigateScreen> {
   void dispose() {
     SettingsService.instance.removeListener(_applySettings);
     _inferenceTimer?.cancel();
+    _introController.dispose();
     _instructionManager.reset();
     _voiceService.stop();
     super.dispose();
@@ -157,9 +267,34 @@ class _NavigateScreenState extends State<NavigateScreen> {
   // START NAVIGATION
   // ------------------------------------------------------------
 
+  /// Hides the introductory title card with a smooth fade + scale-down so the
+  /// live camera preview is revealed beneath it. Guarded so a later
+  /// [_presentIntroCard] during the fade-out is never cancelled afterwards.
+  void _dismissIntroCard() {
+    if (!_showIntroCard) return;
+    _introController.reverse().whenComplete(() {
+      // Only remove the card if no new appearance started while fading out.
+      if (mounted && _showIntroCard) {
+        setState(() => _showIntroCard = false);
+      }
+    });
+  }
+
+  /// Brings the introductory title card back (e.g. after STOP NAVIGATION)
+  /// using the same fade + scale entrance as when the screen opens.
+  void _presentIntroCard() {
+    if (_showIntroCard) {
+      _introController.forward();
+      return;
+    }
+    setState(() => _showIntroCard = true);
+    _introController.forward();
+  }
+
   Future<void> _startNavigation() async {
     print('NAVIGATE_START_PRESSED');
     if (_navState == _NavState.starting) return;
+    _dismissIntroCard();
 
     setState(() => _navState = _NavState.starting);
 
@@ -313,7 +448,10 @@ class _NavigateScreenState extends State<NavigateScreen> {
 
     // Instruction Manager: suppress repeated messages.
     final bool speak = _instructionManager.shouldSpeak(decision);
+    final bool greetingActive =
+        DateTime.now().isBefore(_greetingGuardUntil);
     if (speak &&
+        !greetingActive &&
         _voiceGuidance &&
         _allowAnnouncement(decision, path.primaryBlocker)) {
       _voiceService.speak(nav.lastSpokenMessage);
@@ -473,6 +611,7 @@ class _NavigateScreenState extends State<NavigateScreen> {
       _detectionStatus = '';
       _detectedObject = 'No objects detected';
     });
+    _presentIntroCard();
   }
 
   // ------------------------------------------------------------
@@ -480,10 +619,8 @@ class _NavigateScreenState extends State<NavigateScreen> {
   // ------------------------------------------------------------
 
   void _toggleVoiceGuidance() {
-    setState(() {
-      _voiceGuidance = !_voiceGuidance;
-    });
-    _voiceService.setEnabled(_voiceGuidance);
+    final s = SettingsService.instance;
+    unawaited(s.setGlobalVoiceMuted(!s.globalVoiceMuted));
   }
 
   // ------------------------------------------------------------
@@ -510,44 +647,75 @@ class _NavigateScreenState extends State<NavigateScreen> {
     final size = MediaQuery.of(context).size;
     final bool compact = size.height < 700;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFD),
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildHeader(compact),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onHorizontalDragStart: _onSwipeStart,
+      onHorizontalDragUpdate: _onSwipeUpdate,
+      onHorizontalDragEnd: _onSwipeEnd,
 
-            Expanded(
-              child: Padding(
-                padding: EdgeInsets.fromLTRB(
-                  compact ? 14 : 18,
-                  8,
-                  compact ? 14 : 18,
-                  compact ? 10 : 16,
-                ),
-                child: Column(
-                  children: [
-                    Expanded(
-                      flex: 6,
-                      child: _buildCameraPreview(),
-                    ),
+      child: PopScope(
+        // The removed header back arrow used to stop navigation before
+        // leaving; mirror that with the system back gesture so a running
+        // session never leaks its camera stream.
+        canPop: _navState == _NavState.idle || _navState == _NavState.stopped,
+        onPopInvokedWithResult: (didPop, result) async {
+          if (didPop) return;
+          if (_navState != _NavState.idle && _navState != _NavState.stopped) {
+            await _stopNavigation();
+          }
+          if (context.mounted) Navigator.of(context).pop();
+        },
 
-                    SizedBox(height: compact ? 8 : 12),
+        child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFD),
+        body: SafeArea(
+          child: Column(
+            children: [
+              _buildHeader(compact),
 
-                    _buildStatusCard(compact),
+              Expanded(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    compact ? 14 : 18,
+                    8,
+                    compact ? 14 : 18,
+                    compact ? 10 : 16,
+                  ),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        flex: 6,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(22),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              _buildCameraPreview(),
+                              if (_showIntroCard)
+                                _IntroTitleCard(animation: _introController),
+                            ],
+                          ),
+                        ),
+                      ),
 
-                    SizedBox(height: compact ? 8 : 12),
+                      SizedBox(height: compact ? 8 : 12),
 
-                    _buildInstructionCard(compact),
+                      _buildStatusCard(compact),
 
-                    SizedBox(height: compact ? 8 : 12),
+                      SizedBox(height: compact ? 8 : 12),
 
-                    _buildBottomControls(compact),
-                  ],
+                      _buildInstructionCard(compact),
+
+                      SizedBox(height: compact ? 8 : 12),
+
+                      _buildBottomControls(compact),
+                    ],
+                  ),
                 ),
               ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -567,50 +735,46 @@ class _NavigateScreenState extends State<NavigateScreen> {
       ),
       child: Row(
         children: [
-          _HeaderButton(
-            icon: Icons.arrow_back,
-            onTap: () {
-              if (_navState != _NavState.idle &&
-                  _navState != _NavState.stopped) {
-                _stopNavigation();
-              }
-              Navigator.pop(context);
-            },
+          // Persistent app title, top-left.
+          Expanded(
+            child: Semantics(
+              header: true,
+              label: 'VisionPath AI',
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(text: 'VisionPath '),
+                    TextSpan(
+                      text: 'AI',
+                      style: const TextStyle(color: Color(0xFF1769E0)),
+                    ),
+                  ],
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: compact ? 20 : 22,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.2,
+                  color: const Color(0xFF182230),
+                ),
+              ),
+            ),
           ),
 
           const SizedBox(width: 12),
 
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Navigate',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF182230),
-                  ),
-                ),
-                SizedBox(height: 2),
-                Text(
-                  'Camera-based path assistance',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Color(0xFF667085),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
           // Voice status toggle
           _HeaderButton(
-            icon: _voiceGuidance
-                ? Icons.volume_up_outlined
-                : Icons.volume_off_outlined,
+            icon: SettingsService.instance.globalVoiceMuted
+                ? Icons.volume_off_outlined
+                : Icons.volume_up_outlined,
             onTap: _toggleVoiceGuidance,
           ),
+
+          const SizedBox(width: 10),
+
+          const SettingsButton(),
         ],
       ),
     );
@@ -1020,6 +1184,366 @@ class _HeaderButton extends StatelessWidget {
             color: const Color(0xFF344054),
             size: 21,
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// INTRODUCTORY TITLE CARD
+// ============================================================
+//
+// Rendered inside the camera-preview rectangle with the same dimensions,
+// position and rounded corners. It covers the preview until the user presses
+// START NAVIGATION, then fades and scales away to reveal the live camera.
+
+class _IntroTitleCard extends StatelessWidget {
+  const _IntroTitleCard({required this.animation});
+
+  /// Drives the entrance (fade in + very slight scale) and the departure
+  /// when the user presses START NAVIGATION.
+  final Animation<double> animation;
+
+  @override
+  Widget build(BuildContext context) {
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+
+    return Semantics(
+      container: true,
+      label: 'VisionPath AI. Camera-based path assistance.',
+      child: ExcludeSemantics(
+        child: FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.94, end: 1.0).animate(curved),
+            child: const _IntroCardContent(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _IntroCardContent extends StatelessWidget {
+  const _IntroCardContent();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(22),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFF0B1424),
+            Color(0xFF14203F),
+            Color(0xFF1B2A5E),
+          ],
+          stops: [0.0, 0.55, 1.0],
+        ),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Soft abstract glow shapes (blue + violet accents).
+          Positioned(
+            top: -70,
+            right: -60,
+            child: _GlowBlob(size: 230, color: const Color(0xFF2E7CF6)),
+          ),
+          Positioned(
+            bottom: -90,
+            left: -70,
+            child: _GlowBlob(size: 260, color: const Color(0xFF7C5BFF)),
+          ),
+          Positioned(
+            bottom: 120,
+            right: -50,
+            child: _GlowBlob(size: 180, color: const Color(0xFF4C8DFF)),
+          ),
+
+          // Hairline border for a premium sheen.
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: const Color(0x1FFFFFFF)),
+              ),
+            ),
+          ),
+
+          // Content, auto-fitted to any camera rectangle size.
+          Positioned.fill(
+            child: LayoutBuilder(
+              builder: (context, cons) {
+                final bool short = cons.maxHeight < 300;
+                final bool narrow = cons.maxWidth < 300;
+                final double padH = narrow ? 20 : 28;
+                final double padV = short ? 14 : 20;
+                final double innerWidth =
+                    (cons.maxWidth - padH * 2).clamp(160.0, 420.0);
+
+                return Padding(
+                  padding:
+                      EdgeInsets.symmetric(horizontal: padH, vertical: padV),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: innerWidth),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _LogoMark(size: short ? 56 : 68),
+                          const SizedBox(height: 14),
+                          _BrandTitle(fontSize: short ? 22 : 27),
+                          const SizedBox(height: 8),
+                          const _Tagline(),
+                          const SizedBox(height: 10),
+                          Container(
+                            width: 46,
+                            height: 3,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(2),
+                              gradient: const LinearGradient(
+                                colors: [Color(0xFF2E7CF6), Color(0xFF7C5BFF)],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const _SupportMessage(),
+                          const SizedBox(height: 24),
+                          const _CameraReadyPanel(),
+                          const SizedBox(height: 20),
+                          const _PageDots(),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LogoMark extends StatelessWidget {
+  const _LogoMark({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.30),
+          width: 1.4,
+        ),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF2E7CF6), Color(0xFF6E5BFF)],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF60A5FF).withValues(alpha: 0.45),
+            blurRadius: 26,
+            spreadRadius: 1,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Icon(Icons.visibility_rounded, color: Colors.white, size: size * 0.48),
+    );
+  }
+}
+
+class _BrandTitle extends StatelessWidget {
+  const _BrandTitle({required this.fontSize});
+
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(
+            text: 'VisionPath ',
+            style: TextStyle(
+              fontSize: fontSize,
+              height: 1.1,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.2,
+              color: Colors.white,
+            ),
+          ),
+          TextSpan(
+            text: 'AI',
+            style: TextStyle(
+              fontSize: fontSize,
+              height: 1.1,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.2,
+              color: const Color(0xFF8FB6FF),
+            ),
+          ),
+        ],
+      ),
+      textAlign: TextAlign.center,
+    );
+  }
+}
+
+class _Tagline extends StatelessWidget {
+  const _Tagline();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'NAVIGATION',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        fontSize: 14,
+        height: 1.3,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 2.4,
+        color: Color(0xFFDCE7FF),
+      ),
+    );
+  }
+}
+
+class _SupportMessage extends StatelessWidget {
+  const _SupportMessage();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'Navigate safely with real-time\nobstacle detection and voice guidance',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        fontSize: 12.5,
+        height: 1.45,
+        fontWeight: FontWeight.w500,
+        color: Color(0xCCFFFFFF),
+      ),
+    );
+  }
+}
+
+class _CameraReadyPanel extends StatelessWidget {
+  const _CameraReadyPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.max,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.center_focus_strong_rounded,
+            color: Color(0xFF9FC6FF),
+            size: 22,
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text(
+                  'Camera guidance',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    height: 1.25,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Real-time assistance, ready to begin',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.25,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xB3FFFFFF),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PageDots extends StatelessWidget {
+  const _PageDots();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(3, (i) {
+        return Container(
+          width: 6,
+          height: 6,
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: i == 1
+                ? const Color(0xFF9FC6FF)
+                : Colors.white.withValues(alpha: 0.28),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _GlowBlob extends StatelessWidget {
+  const _GlowBlob({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          colors: [
+            color.withValues(alpha: 0.55),
+            color.withValues(alpha: 0.0),
+          ],
         ),
       ),
     );

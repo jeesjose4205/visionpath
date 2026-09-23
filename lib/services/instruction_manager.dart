@@ -26,11 +26,17 @@ class InstructionManager {
     final bool escalated = changed &&
         _lastDecision != null &&
         _priority(decision) > _priority(_lastDecision!);
+
+    // Respect the repeat cooldown for every utterance. A rapid decision
+    // change never bypasses it — otherwise flickering detections make the
+    // voice loop/stick. Only true escalations (danger increased) get the
+    // shorter gap so safety messages still come through promptly. When the
+    // decision is unchanged and the cooldown elapsed, repeat as a reminder.
     final bool cooldownElapsed = _lastSpokenAt == null ||
         now.difference(_lastSpokenAt!) >=
             (escalated ? escalationMinimumGap : repeatCooldown);
 
-    final bool speak = changed || escalated || cooldownElapsed;
+    final bool speak = cooldownElapsed;
 
     print('INSTRUCTION_MANAGER: decision=${decision.label} changed=$changed escalated=$escalated cooldownElapsed=$cooldownElapsed => speak=$speak');
 

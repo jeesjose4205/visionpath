@@ -15,8 +15,8 @@ import '../services/text_guidance_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/ocr_result_card.dart';
 import '../widgets/read_text_controls.dart';
+import '../widgets/settings_button.dart';
 import '../widgets/text_camera_preview.dart';
-import '../widgets/text_guidance_status.dart';
 
 /// Read Text screen - voice-guided text reading assistant.
 ///
@@ -46,7 +46,8 @@ class ReadTextScreen extends StatefulWidget {
   State<ReadTextScreen> createState() => _ReadTextScreenState();
 }
 
-class _ReadTextScreenState extends State<ReadTextScreen> {
+class _ReadTextScreenState extends State<ReadTextScreen>
+    with SingleTickerProviderStateMixin {
   final OcrService _ocr = OcrService();
   final VoiceService _voice = VoiceService();
   final TextGuidanceService _guidance = TextGuidanceService();
@@ -74,17 +75,79 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
 
   static const Duration _guidanceVoiceCooldown = Duration(milliseconds: 1600);
 
+  // ------------------------------------------------------------
+  // INTRODUCTORY TITLE CARD
+  // ------------------------------------------------------------
+  //
+  // Covers the camera rectangle when the screen opens and again after each
+  // New Scan, fading out to reveal the live preview when START READING is
+  // pressed. Uses the same visual design language as the Navigate screen.
+
+  bool _showIntroCard = true;
+  late final AnimationController _introController;
+
+  // ------------------------------------------------------------
+  // SWIPE NAVIGATION: return to Look & Navigate (Home)
+  // ------------------------------------------------------------
+
+  double _swipeDx = 0;
+  bool _swipeNavLocked = false;
+
+  void _onSwipeStart(DragStartDetails details) {
+    _swipeDx = 0;
+  }
+
+  void _onSwipeUpdate(DragUpdateDetails details) {
+    _swipeDx += details.delta.dx;
+  }
+
+  void _onSwipeEnd(DragEndDetails details) {
+    if (_swipeNavLocked || !mounted) return;
+
+    final velocity = details.primaryVelocity ?? 0;
+    final distance = _swipeDx;
+
+    // Ignore tiny horizontal movements and accidental vertical gestures.
+    if (velocity.abs() < 300 && distance.abs() < 80) return;
+
+    // Only a deliberate LEFT swipe returns to Look & Navigate. There is no
+    // screen defined to the RIGHT of Read Text, so RIGHT swipes do nothing.
+    final direction = velocity != 0 ? velocity : distance;
+    if (direction >= 0) return;
+
+    final navigator = Navigator.of(context);
+    if (!navigator.canPop()) return;
+
+    _swipeNavLocked = true;
+    navigator.pop();
+    Future<void>.delayed(const Duration(milliseconds: 350), () {
+      if (mounted) _swipeNavLocked = false;
+    });
+  }
+
   @override
   void initState() {
     super.initState();
     _applySettings();
     SettingsService.instance.addListener(_applySettings);
     _voice.setEnabled(_voiceEnabled);
+    _introController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 460),
+    )..forward();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _voice.speak(
+          'Read Text. Read text around you with intelligent camera assistance.',
+        );
+      }
+    });
   }
 
   void _applySettings() {
     final s = SettingsService.instance;
-    _voiceEnabled = s.voiceGuidanceEnabled;
+    _voiceEnabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted;
+    setState(() {});
     _voice.setEnabled(_voiceEnabled);
     unawaited(_voice.setSpeechRate(s.speechRateValue));
     unawaited(_voice.setVolume(s.voiceVolume));
@@ -110,6 +173,7 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
     _cameraService?.setOnFrameAvailable((_) {});
     unawaited(_cameraService?.stopImageStream() ?? Future<void>.value());
     unawaited(_ocr.close());
+    _introController.dispose();
     super.dispose();
   }
 
@@ -138,7 +202,9 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
   // ------------------------------------------------------------
 
   void _onFrame(CameraImage image) {
-    // Analysis only runs while the user is positioning text.
+    // Analysis only runs once the introductory card has been dismissed via
+    // START READING (the live camera stays covered until then).
+    if (_showIntroCard) return;
     if (_busyFrame) return;
     if (_captureInProgress) return;
     if (_phase == _ReadPhase.capturing ||
@@ -432,6 +498,13 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
   // ACTIONS
   // ------------------------------------------------------------
 
+  void _startReading() {
+    // Gateway to the live session: the intro card fades away and the
+    // existing guidance loop takes over from the next video frame.
+    if (!_showIntroCard) return;
+    _dismissIntroCard();
+  }
+
   void _newScan() {
     _stopReading = true;
     _voice.stop();
@@ -446,42 +519,157 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
       _lastGuidance = null;
       _statusDetail = 'Look for text to scan';
     });
+    // Return to the introductory card so the START / READ cycle can repeat.
+    _presentIntroCard();
   }
 
   void _toggleVoice() {
-    final bool next = !_voiceEnabled;
-    setState(() {
-      _voiceEnabled = next;
-    });
-    _voice.setEnabled(next);
+    SettingsService.instance.setGlobalVoiceMuted(
+      !SettingsService.instance.globalVoiceMuted,
+    );
     _lastGuidanceVoiceAt = null;
-    if (!next) {
+    if (SettingsService.instance.globalVoiceMuted) {
       _stopReadAloud();
     }
   }
 
   // ------------------------------------------------------------
-  // STATUS VIEW HELPERS
+  // INTRODUCTORY TITLE CARD
   // ------------------------------------------------------------
 
-  (IconData, Color, String) _statusView() {
+  /// Hides the introductory card with a smooth fade + scale-down so the live
+  /// preview is revealed beneath it. Guarded so a later [_presentIntroCard]
+  /// during the fade-out is never cancelled afterwards.
+  void _dismissIntroCard() {
+    if (!_showIntroCard) return;
+    _introController.reverse().whenComplete(() {
+      if (mounted && _showIntroCard) {
+        setState(() => _showIntroCard = false);
+      }
+    });
+  }
+
+  /// Brings the introductory card back (e.g. after a New Scan) using the same
+  /// fade + scale entrance as when the screen opened.
+  void _presentIntroCard() {
+    if (_showIntroCard) {
+      _introController.forward();
+      return;
+    }
+    setState(() => _showIntroCard = true);
+    _introController.forward();
+  }
+
+  // ------------------------------------------------------------
+  // STATUS CONTENT HELPERS
+  // ------------------------------------------------------------
+
+  /// (icon, tile background, icon color, title, subtitle) for the status card.
+  ({IconData icon, Color tile, Color accent, String title, String subtitle})
+      _statusCardData() {
+    if (_cameraFailed) {
+      return (
+        icon: Icons.error_outline,
+        tile: const Color(0xFFFDE8E8),
+        accent: const Color(0xFFD92D20),
+        title: 'Camera error',
+        subtitle: _statusDetail,
+      );
+    }
+    if (_showIntroCard) {
+      return (
+        icon: Icons.menu_book_outlined,
+        tile: const Color(0xFFF2F4F7),
+        accent: const Color(0xFF475467),
+        title: 'Ready to read',
+        subtitle: 'Position the text in the camera view',
+      );
+    }
     switch (_phase) {
       case _ReadPhase.searching:
-        return (Icons.manage_search, const Color(0xFF1769E0), 'SEARCHING FOR TEXT');
+        return (
+          icon: Icons.manage_search,
+          tile: const Color(0xFFF2F4F7),
+          accent: const Color(0xFF475467),
+          title: 'Searching for text',
+          subtitle: _statusDetail,
+        );
       case _ReadPhase.positioning:
-        return (Icons.near_me_outlined, const Color(0xFFB26A00), 'POSITION THE TEXT');
+        return (
+          icon: Icons.near_me_outlined,
+          tile: const Color(0xFFEFF5FF),
+          accent: const Color(0xFF175CD3),
+          title: 'Position the text',
+          subtitle: _statusDetail,
+        );
       case _ReadPhase.holding:
-        return (Icons.center_focus_strong, const Color(0xFF1769E0), 'HOLD STEADY');
+        return (
+          icon: Icons.center_focus_strong,
+          tile: const Color(0xFFEFF5FF),
+          accent: const Color(0xFF175CD3),
+          title: 'Hold steady',
+          subtitle: _statusDetail,
+        );
       case _ReadPhase.ready:
-        return (Icons.check_circle_outline, const Color(0xFF1E8E3E), 'READY TO CAPTURE');
+        return (
+          icon: Icons.check_circle_outline,
+          tile: const Color(0xFFE8F5E9),
+          accent: const Color(0xFF198754),
+          title: 'Text centered',
+          subtitle: _statusDetail,
+        );
       case _ReadPhase.capturing:
-        return (Icons.photo_camera_outlined, const Color(0xFF1769E0), 'CAPTURING');
+        return (
+          icon: Icons.photo_camera_outlined,
+          tile: const Color(0xFFEFF5FF),
+          accent: const Color(0xFF175CD3),
+          title: 'Capturing',
+          subtitle: _statusDetail,
+        );
       case _ReadPhase.processing:
-        return (Icons.document_scanner_outlined, const Color(0xFF1769E0), 'READING TEXT');
+        return (
+          icon: Icons.document_scanner_outlined,
+          tile: const Color(0xFFEFF5FF),
+          accent: const Color(0xFF175CD3),
+          title: 'Reading text',
+          subtitle: _statusDetail,
+        );
       case _ReadPhase.result:
-        return (Icons.article_outlined, const Color(0xFF1E8E3E), 'TEXT RECOGNIZED');
+        return (
+          icon: Icons.article_outlined,
+          tile: const Color(0xFFE8F5E9),
+          accent: const Color(0xFF198754),
+          title: 'Text recognized',
+          subtitle: _statusDetail,
+        );
       case _ReadPhase.error:
-        return (Icons.error_outline, const Color(0xFFC62828), 'NO TEXT FOUND');
+        return (
+          icon: Icons.error_outline,
+          tile: const Color(0xFFFDE8E8),
+          accent: const Color(0xFFD92D20),
+          title: 'No text found',
+          subtitle: _statusDetail,
+        );
+    }
+  }
+
+  String _nextActionMessage() {
+    if (_showIntroCard) return 'Press START READING';
+    switch (_phase) {
+      case _ReadPhase.searching:
+        return 'Slowly scan the area for text';
+      case _ReadPhase.positioning:
+      case _ReadPhase.holding:
+      case _ReadPhase.ready:
+        return _statusDetail;
+      case _ReadPhase.capturing:
+        return 'Taking a picture...';
+      case _ReadPhase.processing:
+        return 'Reading the captured text...';
+      case _ReadPhase.result:
+        return 'Tap Read Aloud to listen, or New Scan';
+      case _ReadPhase.error:
+        return 'Tap New Scan and try again';
     }
   }
 
@@ -494,30 +682,68 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
     final size = MediaQuery.of(context).size;
     final bool compact = size.height < 700;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFD),
-      body: SafeArea(
-        child: Padding(
-          padding: EdgeInsets.symmetric(
-            horizontal: compact ? 14 : 18,
-            vertical: compact ? 6 : 10,
-          ),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onHorizontalDragStart: _onSwipeStart,
+      onHorizontalDragUpdate: _onSwipeUpdate,
+      onHorizontalDragEnd: _onSwipeEnd,
+
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFD),
+        body: SafeArea(
           child: Column(
             children: [
               _buildHeader(compact),
-              const SizedBox(height: 8),
-              _buildStatus(compact),
-              const SizedBox(height: 10),
-              Expanded(flex: 5, child: _buildMedia(compact)),
-              const SizedBox(height: 10),
-              if (_phase == _ReadPhase.result || _phase == _ReadPhase.error)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: _buildResultCard(compact),
+
+              Expanded(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    compact ? 14 : 18,
+                    8,
+                    compact ? 14 : 18,
+                    compact ? 10 : 16,
+                  ),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        flex: 6,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(22),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (_showIntroCard)
+                                ExcludeSemantics(child: _buildMedia(compact))
+                              else
+                                Semantics(
+                                  container: true,
+                                  label: 'Read Text camera',
+                                  child: _buildMedia(compact),
+                                ),
+                              if (_showIntroCard)
+                                _ReadIntroTitleCard(
+                                  animation: _introController,
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      SizedBox(height: compact ? 8 : 12),
+
+                      _buildStatusCard(compact),
+
+                      SizedBox(height: compact ? 8 : 12),
+
+                      _buildNextActionCard(compact),
+
+                      SizedBox(height: compact ? 8 : 12),
+
+                      _buildPrimaryArea(compact),
+                    ],
+                  ),
                 ),
-              _buildControls(compact),
-              const SizedBox(height: 6),
-              _buildHintRow(),
+              ),
             ],
           ),
         ),
@@ -526,65 +752,58 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
   }
 
   Widget _buildHeader(bool compact) {
-    return SizedBox(
-      height: compact ? 48 : 52,
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        compact ? 12 : 18,
+        compact ? 8 : 14,
+        compact ? 12 : 18,
+        4,
+      ),
       child: Row(
         children: [
-          _HeaderButton(
-            icon: Icons.arrow_back_rounded,
-            label: 'Back',
-            onTap: () => Navigator.pop(context),
-          ),
+          // Persistent app title, top-left.
           Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text(
-                  'Read Text',
-                  style: TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF15233D),
-                  ),
+            child: Semantics(
+              header: true,
+              label: 'VisionPath AI',
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(text: 'VisionPath '),
+                    TextSpan(
+                      text: 'AI',
+                      style: const TextStyle(color: Color(0xFF1769E0)),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 1),
-                Text(
-                  'Point your camera at text',
-                  style: TextStyle(
-                    fontSize: compact ? 10 : 11,
-                    color: const Color(0xFF718096),
-                  ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: compact ? 20 : 22,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.2,
+                  color: const Color(0xFF182230),
                 ),
-              ],
+              ),
             ),
           ),
+
+          const SizedBox(width: 12),
+
+          // Voice status toggle
           _HeaderButton(
             icon: _voiceEnabled
                 ? Icons.volume_up_outlined
                 : Icons.volume_off_outlined,
-            label: 'Voice guidance',
+            label: 'Speaker',
             onTap: _toggleVoice,
           ),
+
+          const SizedBox(width: 10),
+
+          const SettingsButton(),
         ],
       ),
-    );
-  }
-
-  Widget _buildStatus(bool compact) {
-    final (icon, accent, label) = _statusView();
-    if (_cameraFailed) {
-      return TextGuidanceStatus(
-        icon: Icons.error_outline,
-        accent: const Color(0xFFC62828),
-        label: 'CAMERA ERROR',
-        detail: _statusDetail,
-      );
-    }
-    return TextGuidanceStatus(
-      icon: icon,
-      accent: accent,
-      label: label,
-      detail: _statusDetail,
     );
   }
 
@@ -715,41 +934,178 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
     );
   }
 
-  Widget _buildControls(bool compact) {
-    final bool showActions =
-        _phase == _ReadPhase.result || _phase == _ReadPhase.error;
-    return ReadTextControls(
-      onCapture: _capture,
-      capturing: _phase == _ReadPhase.capturing,
-      onReadAloud: _startReadAloud,
-      onStopReading: _stopReadAloud,
-      isReading: _reading,
-      onNewScan: _newScan,
-      hasResult: showActions,
-      hasError: _phase == _ReadPhase.error,
-    );
-  }
+  Widget _buildStatusCard(bool compact) {
+    final data = _statusCardData();
 
-  Widget _buildHintRow() {
-    return SizedBox(
-      height: 20,
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 14 : 18,
+        vertical: compact ? 10 : 13,
+      ),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFE4E7EC)),
+      ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            _voiceEnabled ? Icons.volume_up_outlined : Icons.volume_off_outlined,
-            size: 14,
-            color: const Color(0xFF8793A5),
+          Container(
+            width: compact ? 40 : 46,
+            height: compact ? 40 : 46,
+            decoration: BoxDecoration(
+              color: data.tile,
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: Icon(data.icon, color: data.accent, size: compact ? 21 : 24),
           ),
-          const SizedBox(width: 5),
-          Text(
-            _voiceEnabled
-                ? 'Voice guidance is ON'
-                : 'Voice guidance is OFF',
-            style: const TextStyle(fontSize: 10, color: Color(0xFF8793A5)),
+
+          const SizedBox(width: 12),
+
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  data.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: compact ? 14 : 15,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF182230),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  data.subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: compact ? 11 : 12,
+                    color: const Color(0xFF667085),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildNextActionCard(bool compact) {
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(compact ? 14 : 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEEF4FF),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFD9E5FF)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: compact ? 44 : 50,
+            height: compact ? 44 : 50,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(
+              Icons.menu_book_outlined,
+              color: const Color(0xFF175CD3),
+              size: compact ? 24 : 27,
+            ),
+          ),
+
+          const SizedBox(width: 13),
+
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'NEXT ACTION',
+                  style: TextStyle(
+                    fontSize: compact ? 10 : 11,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF667085),
+                    letterSpacing: 0.7,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _nextActionMessage(),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: compact ? 15 : 17,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF182230),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPrimaryArea(bool compact) {
+    // Before START READING: the single feature gate button, styled exactly
+    // like Navigate's START NAVIGATION button.
+    if (_showIntroCard) {
+      return SizedBox(
+        width: double.infinity,
+        height: compact ? 48 : 54,
+        child: ElevatedButton.icon(
+          onPressed: _startReading,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF175CD3),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+          icon: const Icon(Icons.auto_stories_outlined, size: 25),
+          label: Text(
+            'START READING',
+            style: TextStyle(
+              fontSize: compact ? 14 : 15,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ),
+      );
+    }
+
+    // During the live session reuse the existing control set unchanged.
+    final bool showActions =
+        _phase == _ReadPhase.result || _phase == _ReadPhase.error;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (showActions)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _buildResultCard(compact),
+          ),
+        ReadTextControls(
+          onCapture: _capture,
+          capturing: _phase == _ReadPhase.capturing,
+          onReadAloud: _startReadAloud,
+          onStopReading: _stopReadAloud,
+          isReading: _reading,
+          onNewScan: _newScan,
+          hasResult: showActions,
+          hasError: _phase == _ReadPhase.error,
+        ),
+      ],
     );
   }
 }
@@ -757,6 +1113,8 @@ class _ReadTextScreenState extends State<ReadTextScreen> {
 // ═══════════════════════════════════════════════════════
 // HEADER BUTTON
 // ═══════════════════════════════════════════════════════
+//
+// Visually identical to the Navigate screen header button.
 
 class _HeaderButton extends StatelessWidget {
   final IconData icon;
@@ -775,19 +1133,393 @@ class _HeaderButton extends StatelessWidget {
       button: true,
       label: label,
       child: Material(
-        color: Colors.transparent,
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(13),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(14),
-          child: SizedBox(
-            width: 48,
-            height: 48,
+          borderRadius: BorderRadius.circular(13),
+          child: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: const Color(0xFFE4E7EC)),
+            ),
             child: Icon(
               icon,
-              size: 26,
-              color: const Color(0xFF15233D),
+              color: const Color(0xFF344054),
+              size: 21,
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// READ TEXT INTRODUCTORY TITLE CARD
+// ═══════════════════════════════════════════════════════
+//
+// Rendered inside the camera-preview rectangle with the same dimensions,
+// position and rounded corners as the Navigate title card. It covers the
+// preview until the user presses START READING, then fades and scales away
+// to reveal the live camera. Reappears after each New Scan.
+
+class _ReadIntroTitleCard extends StatelessWidget {
+  const _ReadIntroTitleCard({required this.animation});
+
+  /// Drives the entrance (fade in + very slight scale) and the departure
+  /// when the user presses START READING.
+  final Animation<double> animation;
+
+  @override
+  Widget build(BuildContext context) {
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+
+    return Semantics(
+      container: true,
+      label: 'VisionPath AI. Read text around you with intelligent camera '
+          'assistance.',
+      child: ExcludeSemantics(
+        child: FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.94, end: 1.0).animate(curved),
+            child: const _ReadIntroCardContent(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReadIntroCardContent extends StatelessWidget {
+  const _ReadIntroCardContent();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(22),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFF0B1424),
+            Color(0xFF14203F),
+            Color(0xFF1B2A5E),
+          ],
+          stops: [0.0, 0.55, 1.0],
+        ),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Soft abstract glow shapes (blue + violet accents).
+          Positioned(
+            top: -70,
+            right: -60,
+            child: _ReadGlowBlob(size: 230, color: const Color(0xFF2E7CF6)),
+          ),
+          Positioned(
+            bottom: -90,
+            left: -70,
+            child: _ReadGlowBlob(size: 260, color: const Color(0xFF7C5BFF)),
+          ),
+          Positioned(
+            bottom: 120,
+            right: -50,
+            child: _ReadGlowBlob(size: 180, color: const Color(0xFF4C8DFF)),
+          ),
+
+          // Hairline border for a premium sheen.
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: const Color(0x1FFFFFFF)),
+              ),
+            ),
+          ),
+
+          // Content, auto-fitted to any camera rectangle size.
+          Positioned.fill(
+            child: LayoutBuilder(
+              builder: (context, cons) {
+                final bool short = cons.maxHeight < 300;
+                final bool narrow = cons.maxWidth < 300;
+                final double padH = narrow ? 20 : 28;
+                final double padV = short ? 14 : 20;
+                final double innerWidth =
+                    (cons.maxWidth - padH * 2).clamp(160.0, 420.0);
+
+                return Padding(
+                  padding:
+                      EdgeInsets.symmetric(horizontal: padH, vertical: padV),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: innerWidth),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _ReadLogoMark(size: short ? 56 : 68),
+                          const SizedBox(height: 14),
+                          _ReadBrandTitle(fontSize: short ? 22 : 27),
+                          const SizedBox(height: 8),
+                          const _ReadFeatureTitle(),
+                          const SizedBox(height: 6),
+                          const _ReadDescription(),
+                          const SizedBox(height: 10),
+                          Container(
+                            width: 46,
+                            height: 3,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(2),
+                              gradient: const LinearGradient(
+                                colors: [
+                                  Color(0xFF2E7CF6),
+                                  Color(0xFF7C5BFF),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const _ReadReadyPanel(),
+                          const SizedBox(height: 20),
+                          const _ReadPageDots(),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReadLogoMark extends StatelessWidget {
+  const _ReadLogoMark({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.30),
+          width: 1.4,
+        ),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF2E7CF6), Color(0xFF6E5BFF)],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF60A5FF).withValues(alpha: 0.45),
+            blurRadius: 26,
+            spreadRadius: 1,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Icon(
+        Icons.document_scanner_outlined,
+        color: Colors.white,
+        size: size * 0.48,
+      ),
+    );
+  }
+}
+
+class _ReadBrandTitle extends StatelessWidget {
+  const _ReadBrandTitle({required this.fontSize});
+
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(
+            text: 'VisionPath ',
+            style: TextStyle(
+              fontSize: fontSize,
+              height: 1.1,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.2,
+              color: Colors.white,
+            ),
+          ),
+          TextSpan(
+            text: 'AI',
+            style: TextStyle(
+              fontSize: fontSize,
+              height: 1.1,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.2,
+              color: const Color(0xFF8FB6FF),
+            ),
+          ),
+        ],
+      ),
+      textAlign: TextAlign.center,
+    );
+  }
+}
+
+class _ReadFeatureTitle extends StatelessWidget {
+  const _ReadFeatureTitle();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'READ TEXT',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        fontSize: 14,
+        height: 1.3,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 2.4,
+        color: Color(0xFFDCE7FF),
+      ),
+    );
+  }
+}
+
+class _ReadDescription extends StatelessWidget {
+  const _ReadDescription();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'Read text around you with\nintelligent camera assistance',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        fontSize: 12.5,
+        height: 1.45,
+        fontWeight: FontWeight.w500,
+        color: Color(0xCCFFFFFF),
+      ),
+    );
+  }
+}
+
+class _ReadReadyPanel extends StatelessWidget {
+  const _ReadReadyPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.max,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.center_focus_strong_rounded,
+            color: Color(0xFF9FC6FF),
+            size: 22,
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text(
+                  'Camera ready to read',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    height: 1.25,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Tap below to start reading',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.25,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xB3FFFFFF),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReadPageDots extends StatelessWidget {
+  const _ReadPageDots();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(3, (i) {
+        return Container(
+          width: 6,
+          height: 6,
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: i == 0
+                ? const Color(0xFF9FC6FF)
+                : Colors.white.withValues(alpha: 0.28),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _ReadGlowBlob extends StatelessWidget {
+  const _ReadGlowBlob({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          colors: [
+            color.withValues(alpha: 0.55),
+            color.withValues(alpha: 0.0),
+          ],
         ),
       ),
     );

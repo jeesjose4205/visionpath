@@ -28,6 +28,7 @@ import '../services/web_speech_engine.dart';
 import '../utils/portrait_rgba.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/detection_overlay.dart';
+import '../widgets/settings_button.dart';
 
 /// Look & Detect — a live, voice-first visual assistant integrated with the
 /// existing VisionPath AI camera + YOLO + face-recognition services.
@@ -73,13 +74,10 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
 
   LiveAssistantState _state = LiveAssistantState.idle;
   String _stateMessage = '';
-  String _response = '';
-  String _liveTranscript = '';
   bool _cameraOn = true;
   bool _continuousDetect = true;
   bool _voiceEnabled = true;
   bool _familiarScan = false;
-  bool _cameraReady = false;
   bool _cameraFailed = false;
   String _cameraError = '';
   bool _speechAvailable = true;
@@ -105,7 +103,9 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
 
   void _applyVoiceSettings() {
     final s = SettingsService.instance;
-    final gate = s.voiceGuidanceEnabled && s.detectionVoiceEnabled;
+    final gate = s.voiceGuidanceEnabled &&
+        s.detectionVoiceEnabled &&
+        !s.globalVoiceMuted;
     setState(() => _voiceEnabled = gate);
     _voice.setEnabled(gate);
     if (gate) {
@@ -198,7 +198,6 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
     }
 
     setState(() {
-      _cameraReady = true;
       _cameraOn = true;
       _state = _continuousDetect
           ? LiveAssistantState.detecting
@@ -269,7 +268,6 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
         return;
       }
       setState(() {
-        _cameraReady = true;
         if (_continuousDetect) _state = LiveAssistantState.detecting;
       });
       if (_continuousDetect) _startPump();
@@ -508,14 +506,9 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
         _speechAvailable = true;
         _state = LiveAssistantState.listening;
         _stateMessage = '';
-        _liveTranscript = '';
       });
 
       input
-        ..onPartial = (partial) {
-          if (!mounted) return;
-          setState(() => _liveTranscript = partial);
-        }
         ..onResult = (words) {
           _handleSpoken(words);
         }
@@ -641,7 +634,6 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
         _state = _continuousDetect && _cameraOn
             ? LiveAssistantState.detecting
             : LiveAssistantState.idle;
-        _response = '';
       });
       return;
     }
@@ -667,7 +659,6 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
     final answer = _engine.answerQuery(query);
     if (!mounted) return;
     setState(() {
-      _response = answer;
       _state = LiveAssistantState.speaking;
       _stateMessage = '';
     });
@@ -800,42 +791,11 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
             ),
           ),
 
-          // ---- Top controls ----
+          // ---- Settings (fixed, top-right) ----
           Positioned(
-            top: safe.top + 8,
-            left: 16,
+            top: safe.top + 12,
             right: 16,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                _GlassCircleButton(
-                  icon: Icons.cameraswitch_rounded,
-                  semanticLabel: 'Switch camera',
-                  onTap: _flipCamera,
-                ),
-                _GlassCircleButton(
-                  icon: Icons.more_horiz_rounded,
-                  semanticLabel: 'More options',
-                  onTap: _showOptions,
-                ),
-              ],
-            ),
-          ),
-
-          // ---- Status chip ----
-          Positioned(
-            top: safe.top + 78,
-            left: 0,
-            right: 0,
-            child: Center(child: _statusChip()),
-          ),
-
-          // ---- Response card ----
-          Positioned(
-            left: 20,
-            right: 20,
-            bottom: safe.bottom + 168,
-            child: _responseCard(),
+            child: const SettingsButton(),
           ),
 
           // ---- Microphone button ----
@@ -874,145 +834,6 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
     );
   }
 
-  Widget _statusChip() {
-    final active = _cameraOn && _cameraReady;
-    final dot = active
-        ? const Color(0xFF2FBF6A)
-        : const Color(0xFF8A97AB);
-    return _glassContainer(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      borderRadius: 18,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 7,
-            height: 7,
-            decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 7),
-          Text(
-            _cameraOn ? 'CAMERA ON' : 'CAMERA OFF',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10.5,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.1,
-            ),
-          ),
-          if (_continuousDetect && _cameraOn) ...[
-            const SizedBox(width: 10),
-            const Icon(
-              Icons.center_focus_strong_rounded,
-              size: 13,
-              color: Color(0xFF9FC6FF),
-            ),
-            const SizedBox(width: 5),
-            const Text(
-              'DETECT',
-              style: TextStyle(
-                color: Color(0xFF9FC6FF),
-                fontSize: 10.5,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1.1,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _responseCard() {
-    final (stateLabel, color) = _stateLabel();
-    final visibleText = switch (_state) {
-      LiveAssistantState.listening => _liveTranscript.isEmpty
-          ? 'Listening\u2026'
-          : '“$_liveTranscript”',
-      LiveAssistantState.idle => _response.isNotEmpty
-          ? _response
-          : 'Point the camera at what you want to understand, then tap the microphone and ask me.',
-      LiveAssistantState.detecting => _response.isNotEmpty
-          ? _response
-          : 'Watching your surroundings. I will speak up when something changes.',
-      _ => _response.isNotEmpty ? _response : stateLabel,
-    };
-
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 260),
-        switchInCurve: Curves.easeOut,
-        switchOutCurve: Curves.easeIn,
-        child: _glassContainer(
-          key: ValueKey<String>('$stateLabel|$visibleText'),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-          borderRadius: 22,
-          constraints: const BoxConstraints(maxWidth: 380),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: color,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    stateLabel.toUpperCase(),
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.82),
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                visibleText,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15.5,
-                  height: 1.35,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  (String, Color) _stateLabel() {
-    switch (_state) {
-      case LiveAssistantState.idle:
-        return ('Tap the microphone and ask me', const Color(0xFF8A97AB));
-      case LiveAssistantState.listening:
-        return ('Listening', const Color(0xFF2FBF6A));
-      case LiveAssistantState.processing:
-        return ('Looking', const Color(0xFF9FC6FF));
-      case LiveAssistantState.speaking:
-        return ('Speaking', const Color(0xFF9FC6FF));
-      case LiveAssistantState.detecting:
-        return ('Watching', const Color(0xFF2FBF6A));
-      case LiveAssistantState.error:
-        return (_stateMessage.isEmpty ? 'Something went wrong' : _stateMessage,
-            const Color(0xFFE5484D));
-      case LiveAssistantState.disconnected:
-        return (_stateMessage.isEmpty ? 'Not available' : _stateMessage,
-            const Color(0xFFE5A448));
-    }
-  }
-
   Widget _bottomBar() {
     return Center(
       child: _glassContainer(
@@ -1021,6 +842,12 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            _GlassIconButton(
+              icon: Icons.cameraswitch_rounded,
+              semanticLabel: 'Switch camera',
+              onTap: _flipCamera,
+            ),
+            const SizedBox(width: 18),
             _GlassIconButton(
               icon: _cameraOn
                   ? Icons.videocam_rounded
@@ -1040,17 +867,24 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
             ),
             const SizedBox(width: 18),
             _GlassIconButton(
-              icon: _voiceEnabled
-                  ? Icons.volume_up_rounded
-                  : Icons.volume_off_rounded,
-              semanticLabel: _voiceEnabled ? 'Turn voice off' : 'Turn voice on',
+              icon: SettingsService.instance.globalVoiceMuted
+                  ? Icons.volume_off_rounded
+                  : Icons.volume_up_rounded,
+              semanticLabel: SettingsService.instance.globalVoiceMuted
+                  ? 'Turn voice on'
+                  : 'Turn voice off',
               onTap: () {
-                final next = !_voiceEnabled;
-                setState(() => _voiceEnabled = next);
-                _voice.setEnabled(next);
-                if (!next) _voice.stop();
+                SettingsService.instance.setGlobalVoiceMuted(
+                  !SettingsService.instance.globalVoiceMuted,
+                );
                 HapticFeedback.selectionClick();
               },
+            ),
+            const SizedBox(width: 18),
+            _GlassIconButton(
+              icon: Icons.more_horiz_rounded,
+              semanticLabel: 'More options',
+              onTap: _showOptions,
             ),
             const SizedBox(width: 18),
             _GlassIconButton(
@@ -1085,44 +919,6 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
             border: Border.all(color: const Color(0x33FFFFFF)),
           ),
           child: child,
-        ),
-      ),
-    );
-  }
-}
-
-// ------------------------------------------------------------------
-// Glass circle icon button (top bar)
-// ------------------------------------------------------------------
-
-class _GlassCircleButton extends StatelessWidget {
-  const _GlassCircleButton({
-    required this.icon,
-    required this.semanticLabel,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String semanticLabel;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: semanticLabel,
-      child: Material(
-        color: const Color(0x33000000),
-        shape: const CircleBorder(),
-        elevation: 4,
-        shadowColor: Colors.black54,
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(13),
-            child: Icon(icon, color: Colors.white, size: 24),
-          ),
         ),
       ),
     );
@@ -1353,7 +1149,6 @@ class _OptionsSheet extends StatefulWidget {
 class _OptionsSheetState extends State<_OptionsSheet> {
   late bool _continuous;
   late bool _camera;
-  late bool _voice;
   late bool _familiar;
 
   @override
@@ -1362,7 +1157,6 @@ class _OptionsSheetState extends State<_OptionsSheet> {
     final s = widget.screen;
     _continuous = s._continuousDetect;
     _camera = s._cameraOn;
-    _voice = s._voiceEnabled;
     _familiar = s._familiarScan;
   }
 
@@ -1427,12 +1221,9 @@ class _OptionsSheetState extends State<_OptionsSheet> {
             _optionSwitch(
               icon: Icons.volume_up_rounded,
               title: 'Voice',
-              value: _voice,
+              value: !SettingsService.instance.globalVoiceMuted,
               onChanged: (v) {
-                setState(() => _voice = v);
-                s._voiceEnabled = v;
-                s._voice.setEnabled(v);
-                if (!v) s._voice.stop();
+                SettingsService.instance.setGlobalVoiceMuted(!v);
               },
             ),
             if (s._faceService?.people.isNotEmpty ?? false)

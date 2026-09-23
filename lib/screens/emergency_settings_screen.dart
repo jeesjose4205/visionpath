@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../services/settings_service.dart';
 import '../widgets/settings_widgets.dart';
+import '../widgets/sos_gesture.dart';
 import 'emergency_screen.dart';
 
 /// Emergency settings: contact management entry, SOS hold duration and SOS
@@ -39,6 +40,7 @@ class EmergencySettingsScreen extends StatelessWidget {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
+                        settings: const RouteSettings(name: kSosRouteName),
                         builder: (_) => const EmergencyScreen(),
                       ),
                     );

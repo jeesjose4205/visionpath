@@ -18,6 +18,7 @@ class SettingsService extends ChangeNotifier {
   static final SettingsService instance = SettingsService._();
 
   static const String _kVoiceGuidance = 'setting.voiceGuidance';
+  static const String _kGlobalVoiceMuted = 'setting.globalVoiceMuted';
   static const String _kSpeechRate = 'setting.speechRate';
   static const String _kVoiceVolume = 'setting.voiceVolume';
   static const String _kVoiceLanguage = 'setting.voiceLanguage';
@@ -64,6 +65,7 @@ class SettingsService extends ChangeNotifier {
   // ---------------------------------------------------------------
 
   bool _voiceGuidanceEnabled = true;
+  bool _globalVoiceMuted = false;
   bool _repeatInstruction = true;
   double _voiceVolume = 1.0;
   int _announcementCooldownSeconds = 3;
@@ -71,6 +73,7 @@ class SettingsService extends ChangeNotifier {
   VoiceLanguage _voiceLanguage = VoiceLanguage.systemDefault;
 
   bool get voiceGuidanceEnabled => _voiceGuidanceEnabled;
+  bool get globalVoiceMuted => _globalVoiceMuted;
   bool get repeatInstruction => _repeatInstruction;
   double get voiceVolume => _voiceVolume;
   int get announcementCooldownSeconds => _announcementCooldownSeconds;
@@ -224,6 +227,7 @@ class SettingsService extends ChangeNotifier {
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     _voiceGuidanceEnabled = prefs.getBool(_kVoiceGuidance) ?? true;
+    _globalVoiceMuted = prefs.getBool(_kGlobalVoiceMuted) ?? false;
     _repeatInstruction = prefs.getBool(_kRepeatInstruction) ?? true;
     _voiceVolume = prefs.getDouble(_kVoiceVolume) ?? 1.0;
     _announcementCooldownSeconds = prefs.getInt(_kAnnouncementCooldown) ?? 3;
@@ -285,6 +289,9 @@ class SettingsService extends ChangeNotifier {
 
   Future<void> setVoiceGuidanceEnabled(bool v) =>
       _write(_kVoiceGuidance, () => _voiceGuidanceEnabled = v, prefsBool: v);
+
+  Future<void> setGlobalVoiceMuted(bool v) =>
+      _write(_kGlobalVoiceMuted, () => _globalVoiceMuted = v, prefsBool: v);
 
   Future<void> setRepeatInstruction(bool v) =>
       _write(_kRepeatInstruction, () => _repeatInstruction = v, prefsBool: v);
