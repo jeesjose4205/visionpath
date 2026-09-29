@@ -29,6 +29,10 @@ class OcrService {
   bool _isActive = false;
   bool _closed = false;
 
+  /// Guards the per-analysis guidance log so it prints at most ~once a
+  /// second instead of once per recognized frame.
+  int _lastGuidanceLogAt = 0;
+
   bool get isActive => _isActive;
 
   Future<TextRecognizer> _ensureRecognizer() async {
@@ -74,11 +78,13 @@ class OcrService {
         width: width,
         height: height,
       );
-      print('GUIDANCE_OCR_START ${width}x$height');
+      printRateLimited('GUIDANCE_OCR_START ${width}x$height');
       final result = await recognizer.processImage(input);
       final blocks = _blocksFromRecognized(result, width, height);
-      print('GUIDANCE_OCR_BLOCKS: ${blocks.length}');
-      print('GUIDANCE_OCR_TEXT_LENGTH: ${result.text.trim().length}');
+      printRateLimited(
+        'GUIDANCE_OCR_BLOCKS: ${blocks.length}',
+      );
+      printRateLimited('GUIDANCE_OCR_TEXT_LENGTH: ${result.text.trim().length}');
       return OcrResult(
         text: _clean(result.text),
         blocks: blocks,
@@ -89,6 +95,17 @@ class OcrService {
       print('GUIDANCE_OCR_ERROR: $e');
       return null;
     }
+  }
+
+  /// Emit [message] to the console at most ~once per second.
+  ///
+  /// OCR runs repeatedly while the guidance loop scans live frames; logging
+  /// every pass flooded the terminal at camera frame rate.
+  void printRateLimited(String message) {
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _lastGuidanceLogAt < 1000) return;
+    _lastGuidanceLogAt = nowMs;
+    print(message);
   }
 
   /// Decode an image file to an upright portrait RGBA buffer (EXIF honoured).

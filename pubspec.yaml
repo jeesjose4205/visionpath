@@ -25,6 +25,7 @@ dependencies:
     path: third_party/vosk_flutter
   permission_handler: 10.2.0
   flutter_inappwebview: ^6.1.5
+  vibration: ^3.2.1
 
 dev_dependencies:
   flutter_test:

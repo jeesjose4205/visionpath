@@ -12,10 +12,14 @@ import '../services/camera_service.dart';
 import '../services/ocr_service.dart';
 import '../services/settings_service.dart';
 import '../services/text_guidance_service.dart';
+import '../services/vibration_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/ocr_result_card.dart';
 import '../widgets/read_text_controls.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/sos_gesture.dart';
+import '../widgets/sound_mode_button.dart';
+import '../widgets/visora/visora_overlay.dart';
 import '../widgets/text_camera_preview.dart';
 
 /// Read Text screen - voice-guided text reading assistant.
@@ -102,7 +106,7 @@ class _ReadTextScreenState extends State<ReadTextScreen>
   }
 
   void _onSwipeEnd(DragEndDetails details) {
-    if (_swipeNavLocked || !mounted) return;
+    if (_swipeNavLocked || SosGestureOverlay.sosSwipeActive || !mounted) return;
 
     final velocity = details.primaryVelocity ?? 0;
     final distance = _swipeDx;
@@ -117,6 +121,13 @@ class _ReadTextScreenState extends State<ReadTextScreen>
 
     final navigator = Navigator.of(context);
     if (!navigator.canPop()) return;
+
+    // During an active session the same rule as the system BACK applies:
+    // abort back to the START READING gate instead of leaving the screen.
+    if (!_showIntroCard) {
+      _newScan();
+      return;
+    }
 
     _swipeNavLocked = true;
     navigator.pop();
@@ -146,7 +157,10 @@ class _ReadTextScreenState extends State<ReadTextScreen>
 
   void _applySettings() {
     final s = SettingsService.instance;
-    _voiceEnabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted;
+    // Vibrate mode silences reading like a phone ringer; the finished-read
+    // alert becomes a single vibration instead of "End of text.".
+    _voiceEnabled =
+        s.voiceGuidanceEnabled && !s.globalVoiceMuted && !s.vibrateMode;
     setState(() {});
     _voice.setEnabled(_voiceEnabled);
     unawaited(_voice.setSpeechRate(s.speechRateValue));
@@ -160,9 +174,8 @@ class _ReadTextScreenState extends State<ReadTextScreen>
     if (_cameraService != null) return;
     _cameraService = Provider.of<CameraService>(context, listen: false);
     _cameraService!.setOnFrameAvailable(_onFrame);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startCamera();
-    });
+    // The camera is intentionally NOT started here: it opens only when the
+    // user presses START READING (see [_startReading]).
   }
 
   @override
@@ -444,7 +457,10 @@ class _ReadTextScreenState extends State<ReadTextScreen>
           _reading = false;
           _statusDetail = 'Recognized ${_result?.charCount ?? 0} characters';
         });
-        if (!_stopReading && _voiceEnabled) {
+        if (_stopReading) return;
+        if (SettingsService.instance.vibrateMode) {
+          VibrationService.instance.vibrateOnce();
+        } else if (_voiceEnabled) {
           _voice.speak('End of text.');
         }
       },
@@ -499,9 +515,11 @@ class _ReadTextScreenState extends State<ReadTextScreen>
   // ------------------------------------------------------------
 
   void _startReading() {
-    // Gateway to the live session: the intro card fades away and the
-    // existing guidance loop takes over from the next video frame.
+    // Gateway to the live session: open the camera, then the intro card
+    // fades away and the existing guidance loop takes over from the next
+    // video frame.
     if (!_showIntroCard) return;
+    unawaited(_startCamera());
     _dismissIntroCard();
   }
 
@@ -520,17 +538,10 @@ class _ReadTextScreenState extends State<ReadTextScreen>
       _statusDetail = 'Look for text to scan';
     });
     // Return to the introductory card so the START / READ cycle can repeat.
+    // The camera stays off while the intro card is shown; START READING
+    // re-opens it.
+    unawaited(_cameraService?.stopImageStream() ?? Future<void>.value());
     _presentIntroCard();
-  }
-
-  void _toggleVoice() {
-    SettingsService.instance.setGlobalVoiceMuted(
-      !SettingsService.instance.globalVoiceMuted,
-    );
-    _lastGuidanceVoiceAt = null;
-    if (SettingsService.instance.globalVoiceMuted) {
-      _stopReadAloud();
-    }
   }
 
   // ------------------------------------------------------------
@@ -688,7 +699,17 @@ class _ReadTextScreenState extends State<ReadTextScreen>
       onHorizontalDragUpdate: _onSwipeUpdate,
       onHorizontalDragEnd: _onSwipeEnd,
 
-      child: Scaffold(
+      child: PopScope(
+        // Capturing/reading is an active live session: pressing BACK aborts
+        // it and returns to the START READING gate instead of leaving the
+        // screen. Only from the gate does back truly pop back to navigation.
+        canPop: _showIntroCard,
+        onPopInvokedWithResult: (didPop, result) async {
+          if (didPop || !mounted || _showIntroCard) return;
+          _newScan();
+        },
+
+        child: Scaffold(
         backgroundColor: const Color(0xFFF8FAFD),
         body: SafeArea(
           child: Column(
@@ -747,8 +768,14 @@ class _ReadTextScreenState extends State<ReadTextScreen>
             ],
           ),
         ),
+        ),
       ),
     );
+  }
+
+  Future<void> _openVisora() async {
+    if (!mounted) return;
+    await VisoraOverlay.show(context);
   }
 
   Widget _buildHeader(bool compact) {
@@ -790,14 +817,17 @@ class _ReadTextScreenState extends State<ReadTextScreen>
 
           const SizedBox(width: 12),
 
-          // Voice status toggle
+          // Visora AI assistant — first square, consistent on every screen.
           _HeaderButton(
-            icon: _voiceEnabled
-                ? Icons.volume_up_outlined
-                : Icons.volume_off_outlined,
-            label: 'Speaker',
-            onTap: _toggleVoice,
+            icon: Icons.auto_awesome_rounded,
+            label: 'Visora AI assistant',
+            onTap: () => unawaited(_openVisora()),
           ),
+
+          const SizedBox(width: 10),
+
+          // Ringer switch: sound -> vibrate -> muted.
+          SoundModeButton(),
 
           const SizedBox(width: 10),
 

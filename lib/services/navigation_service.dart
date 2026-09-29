@@ -53,6 +53,12 @@ class NavigationService with ChangeNotifier {
       return NavigationDecision.forward;
     }
 
+    // Both lateral regions blocked: there is no side to manoeuvre to.
+    if (path.pathFullyBlocked) {
+      outReason('Path is blocked on both sides.');
+      return NavigationDecision.stop;
+    }
+
     // 1. Immediate danger: any very-close object spanning/at the center.
     for (final obj in objects) {
       final bool spansCenter = obj.centerX >= 0.30 && obj.centerX <= 0.70;
@@ -112,17 +118,26 @@ class NavigationService with ChangeNotifier {
     DetectedObject? blocker,
   ) {
     final String label = blocker?.displayName ?? 'Object';
+    final String distance = blocker?.distanceValueText ?? '';
     switch (decision) {
       case NavigationDecision.forward:
         return 'Path appears clear. Move forward.';
       case NavigationDecision.left:
-        return 'Obstacle ahead. Move slightly left.';
+        return distance.isEmpty
+            ? '$label ahead. Move slightly left.'
+            : '$label ahead, $distance. Move slightly left.';
       case NavigationDecision.right:
-        return 'Obstacle ahead. Move slightly right.';
+        return distance.isEmpty
+            ? '$label ahead. Move slightly right.'
+            : '$label ahead, $distance. Move slightly right.';
       case NavigationDecision.slow:
-        return '$label ahead. Slow down.';
+        return distance.isEmpty
+            ? '$label ahead. Slow down.'
+            : '$label ahead, $distance. Slow down.';
       case NavigationDecision.stop:
-        return 'Stop. Obstacle very close.';
+        return blocker == null
+            ? 'Stop. Obstacle very close.'
+            : 'Stop. $label very close.';
     }
   }
 

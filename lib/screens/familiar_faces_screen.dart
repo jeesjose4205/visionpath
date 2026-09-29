@@ -13,11 +13,15 @@ import '../services/face_embedding_service.dart';
 import '../services/face_recognition_service.dart';
 import '../services/familiar_face_service.dart';
 import '../services/settings_service.dart';
+import '../services/vibration_service.dart';
 import '../services/voice_service.dart';
 import '../utils/portrait_rgba.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/face_recognition_overlay.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/sos_gesture.dart';
+import '../widgets/sound_mode_button.dart';
+import '../widgets/visora/visora_overlay.dart';
 import 'face_registration_screen.dart';
 import 'registered_faces_screen.dart';
 
@@ -98,7 +102,7 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   }
 
   void _onSwipeEnd(DragEndDetails details) {
-    if (_swipeNavLocked || !mounted) return;
+    if (_swipeNavLocked || SosGestureOverlay.sosSwipeActive || !mounted) return;
 
     final velocity = details.primaryVelocity ?? 0;
     final distance = _swipeDx;
@@ -113,6 +117,14 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
 
     final navigator = Navigator.of(context);
     if (!navigator.canPop()) return;
+
+    // During an active recognition session the same rule as the system BACK
+    // applies: stop recognition and return to the title-card gate instead of
+    // leaving the screen.
+    if (!_showTitleCard) {
+      _stopRecognition();
+      return;
+    }
 
     _swipeNavLocked = true;
     navigator.pop();
@@ -157,7 +169,8 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
     _voiceEnabled = s.familiarFacesEnabled &&
         s.familiarFaceVoice &&
         s.voiceGuidanceEnabled &&
-        !s.globalVoiceMuted;
+        !s.globalVoiceMuted &&
+        !s.vibrateMode;
     setState(() {});
     _voice.setEnabled(_voiceEnabled);
     _unknownEnabled = s.unknownPersonAnnouncements;
@@ -409,8 +422,15 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
 
     final now = DateTime.now();
     final lines = _annMgr.update(occurrences, now);
-    for (final line in lines) {
-      _voice.speak(line);
+    if (lines.isNotEmpty) {
+      if (SettingsService.instance.vibrateMode) {
+        // Ringer in vibrate mode: three pulses replace the spoken callout.
+        VibrationService.instance.vibrateFamiliarFace();
+      } else {
+        for (final line in lines) {
+          _voice.speak(line);
+        }
+      }
     }
 
     if (!mounted || !_recognizing) return;
@@ -419,12 +439,6 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
       _statusLine = status;
       _statusName = name;
     });
-  }
-
-  void _toggleVoice() {
-    SettingsService.instance.setGlobalVoiceMuted(
-      !SettingsService.instance.globalVoiceMuted,
-    );
   }
 
   Future<void> _openRegistration() async {
@@ -467,7 +481,17 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
       onHorizontalDragUpdate: _onSwipeUpdate,
       onHorizontalDragEnd: _onSwipeEnd,
 
-      child: Scaffold(
+      child: PopScope(
+        // Recognition is an active live session: pressing BACK stops it and
+        // returns to the title-card gate instead of leaving the screen. Only
+        // from the gate does back truly pop back to the navigation screen.
+        canPop: _showTitleCard,
+        onPopInvokedWithResult: (didPop, result) async {
+          if (didPop || !mounted || _showTitleCard) return;
+          _stopRecognition();
+        },
+
+        child: Scaffold(
         backgroundColor: const Color(0xFFF8FAFD),
         body: SafeArea(
           child: Column(
@@ -527,6 +551,7 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
             ],
           ),
         ),
+        ),
       ),
     );
   }
@@ -534,6 +559,11 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   // ------------------------------------------------------------
   // HEADER
   // ------------------------------------------------------------
+
+  Future<void> _openVisora() async {
+    if (!mounted) return;
+    await VisoraOverlay.show(context);
+  }
 
   Widget _buildHeader(bool compact) {
     return Padding(
@@ -574,14 +604,17 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
 
           const SizedBox(width: 12),
 
-          // Voice toggle (speaker).
+          // Visora AI assistant — first square, consistent on every screen.
           _HeaderButton(
-            icon: _voiceEnabled
-                ? Icons.volume_up_outlined
-                : Icons.volume_off_outlined,
-            label: 'Speaker',
-            onTap: _toggleVoice,
+            icon: Icons.auto_awesome_rounded,
+            label: 'Visora AI assistant',
+            onTap: () => unawaited(_openVisora()),
           ),
+
+          const SizedBox(width: 10),
+
+          // Ringer switch: sound -> vibrate -> muted.
+          SoundModeButton(),
 
           const SizedBox(width: 10),
 

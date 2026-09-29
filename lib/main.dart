@@ -12,6 +12,7 @@ import 'services/object_detection_service.dart';
 import 'services/path_analysis_service.dart';
 import 'services/position_detection_service.dart';
 import 'services/settings_service.dart';
+import 'services/visora/visora_config.dart';
 import 'widgets/sos_gesture.dart';
 
 Future<void> main() async {
@@ -22,6 +23,8 @@ Future<void> main() async {
   // Load persisted settings before the first frame so theme/voice behaviour
   // are correct immediately.
   await SettingsService.instance.load();
+  // Load the Visora assistant configuration (endpoint/key/model etc.).
+  await VisoraConfig.instance.load();
   runApp(const VisionPathApp());
 }
 

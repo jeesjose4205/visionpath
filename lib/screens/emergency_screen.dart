@@ -4,13 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../models/app_settings.dart';
 import '../models/emergency_contact.dart';
 import '../services/emergency_contact_service.dart';
 import '../services/settings_service.dart';
+import '../services/vibration_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/emergency_contact_card.dart';
 import '../widgets/emergency_location_card.dart';
 import '../widgets/emergency_sos_button.dart';
+import '../widgets/sound_mode_button.dart';
 
 enum _SosStatus { ready, activating, activated }
 
@@ -52,11 +55,23 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     _voice.setEnabled(_voiceEnabled);
     _contactService.addListener(_onContactsChanged);
     _loadContacts();
+    unawaited(_announceScreen());
+  }
+
+  /// Announces which screen is open once the entrance has settled. Like every
+  /// other screen's announcement, it follows the global voice switch and the
+  /// on-screen speaker mute via VoiceService.speak() itself.
+  Future<void> _announceScreen() async {
+    await Future<void>.delayed(const Duration(milliseconds: 420));
+    if (!mounted || !_voiceEnabled) return;
+    _voice.speak(
+      'Emergency screen. Quick access to help and your emergency contacts.',
+    );
   }
 
   void _applySettings() {
     final s = SettingsService.instance;
-    _voiceEnabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted;
+    _voiceEnabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted && !s.vibrateMode;
     _holdSeconds = s.sosHoldDurationSeconds;
     _countdown = s.sosHoldDurationSeconds;
     _voice.setEnabled(_voiceEnabled);
@@ -85,12 +100,6 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     super.dispose();
   }
 
-  void _toggleVoice() {
-    SettingsService.instance.setGlobalVoiceMuted(
-      !SettingsService.instance.globalVoiceMuted,
-    );
-  }
-
   void _onTick(int remaining) {
     if (!mounted) return;
     setState(() {
@@ -107,7 +116,12 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   void _onActivated() {
     if (!mounted) return;
     setState(() => _status = _SosStatus.activated);
-    _voice.speak('SOS activated.');
+    if (SettingsService.instance.vibrateMode) {
+      // Ringer in vibrate mode: a sustained ~2s buzz marks the activation.
+      VibrationService.instance.vibrateSOS();
+    } else {
+      _voice.speak('SOS activated.');
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final contacts = _contactService.contacts;
@@ -396,41 +410,53 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFD),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final height = constraints.maxHeight;
-              final contacts = _contactService.contacts;
-              final n = contacts.length;
+      // Swallowing the SOS screen's own horizontal drags guarantees no other
+      // screen can ever open by swiping from here; leave it with the back
+      // button and the system back gesture, which pop to the previous screen.
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragStart: (_) {},
+        onHorizontalDragUpdate: (_) {},
+        onHorizontalDragEnd: (_) {},
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final height = constraints.maxHeight;
+                final contacts = _contactService.contacts;
+                final n = contacts.length;
 
-              var cardH = 48.0;
-              if (n > 0) {
-                while (true) {
-                  final budget =
-                      height - 60 - 66 - _contactsHeight(cardH, n);
-                  if (budget >= 130 || cardH <= 32) break;
-                  cardH -= 2;
+                var cardH = 48.0;
+                if (n > 0) {
+                  while (true) {
+                    final budget =
+                        height - 60 - 66 - _contactsHeight(cardH, n);
+                    if (budget >= 130 || cardH <= 32) break;
+                    cardH -= 2;
+                  }
                 }
-              }
-              final contactsBlock = _contactsHeight(cardH, n);
-              var sosH = height - 60 - 66 - contactsBlock;
-              if (sosH > 360) sosH = 360;
+                final contactsBlock = _contactsHeight(cardH, n);
+                var sosH = height - 60 - 66 - contactsBlock;
+                if (sosH > 360) sosH = 360;
 
-              return Column(
-                children: [
-                  SizedBox(height: 56, child: _buildHeader()),
-                  const SizedBox(height: 4),
-                  SizedBox(height: sosH < 0 ? 0 : sosH, child: _buildSosPanel()),
-                  const Spacer(),
-                  _buildContactsCard(cardH),
-                  const SizedBox(height: 10),
-                  const EmergencyLocationCard(),
-                  const SizedBox(height: 10),
-                ],
-              );
-            },
+                return Column(
+                  children: [
+                    SizedBox(height: 56, child: _buildHeader()),
+                    const SizedBox(height: 4),
+                    SizedBox(
+                      height: sosH < 0 ? 0 : sosH,
+                      child: _buildSosPanel(),
+                    ),
+                    const Spacer(),
+                    _buildContactsCard(cardH),
+                    const SizedBox(height: 10),
+                    const EmergencyLocationCard(),
+                    const SizedBox(height: 10),
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -477,13 +503,19 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
             ],
           ),
         ),
-        _CircleButton(
-          icon: _voiceEnabled
-              ? Icons.volume_up_rounded
-              : Icons.volume_off_rounded,
-          tooltip: _voiceEnabled ? 'Voice prompts: ON' : 'Voice prompts: OFF',
-          color: _voiceEnabled ? _accent : const Color(0xFF9AA4B2),
-          onTap: _toggleVoice,
+        ListenableBuilder(
+          listenable: SettingsService.instance,
+          builder: (context, _) {
+            final mode = SettingsService.instance.alertMode;
+            return _CircleButton(
+              icon: SoundModeButton.iconFor(mode),
+              tooltip: SoundModeButton.labelFor(mode),
+              color: mode == AlertMode.muted
+                  ? const Color(0xFF9AA4B2)
+                  : _accent,
+              onTap: SoundModeButton.toggle,
+            );
+          },
         ),
       ],
     );

@@ -147,13 +147,13 @@ class _DetectionPainter extends CustomPainter {
         paint,
       );
 
-      // Draw label below bounding box (not above)
+// Draw label below bounding box (not above)
       final String posLabel = showPosition && result.position != null
           ? '   ${result.position!.label}'
           : '';
       final String confLabel =
           showConfidence ? ' ${(_formatConfidence(result.confidence))}' : '';
-      final label = '${result.displayName}$posLabel$confLabel';
+      final String label = '${result.displayName}$posLabel$confLabel';
 
       final textPainter = TextPainter(
         text: TextSpan(text: label, style: style),
@@ -163,8 +163,33 @@ class _DetectionPainter extends CustomPainter {
 
       textPainter.layout();
 
-      final labelWidth = textPainter.width + 12;
-      final labelHeight = textPainter.height + 8;
+      // Optional second line with this object's OWN calibrated distance.
+      // Only rendered when the depth pipeline attached a metric value — it is
+      // never invented here. Low-confidence reads carry an "≈" prefix.
+      TextPainter? distancePainter;
+      final String? distanceText = result.distanceLabel;
+      if (distanceText != null) {
+        distancePainter = TextPainter(
+          text: TextSpan(
+            text: distanceText,
+            style: const TextStyle(
+              fontFamily: 'Roboto',
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFFFFD166),
+            ),
+          ),
+          textAlign: TextAlign.left,
+          textDirection: TextDirection.ltr,
+        )..layout();
+      }
+
+      final double distanceHeight = distancePainter?.height ?? 0;
+      final double labelWidth =
+          math.max(textPainter.width, distancePainter?.width ?? 0) + 12;
+      final double labelHeight =
+          (textPainter.height + (distanceHeight > 0 ? distanceHeight + 4 : 0)) +
+              8;
 
       // Draw label background BELOW the bounding box
       canvas.drawRect(
@@ -177,6 +202,14 @@ class _DetectionPainter extends CustomPainter {
         canvas,
         Offset(left + 6, bottom + 6),
       );
+
+      // Draw distance line under the label
+      if (distancePainter != null) {
+        distancePainter.paint(
+          canvas,
+          Offset(left + 6, bottom + 6 + textPainter.height + 2),
+        );
+      }
     }
   }
 

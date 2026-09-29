@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/settings_service.dart';
+import '../services/visora/visora_config.dart';
+import '../widgets/sound_mode_button.dart';
 import 'about_screen.dart';
 import 'accessibility_settings_screen.dart';
 import 'detection_settings_screen.dart';
@@ -14,6 +16,15 @@ import 'privacy_settings_screen.dart';
 import 'read_text_settings_screen.dart';
 import 'reset_settings_screen.dart';
 import 'voice_settings_screen.dart';
+import 'visora_settings_screen.dart';
+
+/// Live "Visora AI" dashboard status. "Online" only after a verified
+/// successful backend response (see VisoraConfig.connectionVerified).
+String _visoraStatus(BuildContext context) {
+  final cfg = VisoraConfig.instance;
+  if (!cfg.hasBackend) return 'Offline';
+  return cfg.connectionVerified ? 'Online' : 'Ready';
+}
 
 /// SettingsScreen is the launcher for VisionPath AI configuration.
 ///
@@ -35,32 +46,40 @@ class SettingsScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ----------------------------------------------------------
-            // HEADER — only the page title + subtitle. No back icon,
-            // no branding, no gear, no additional controls.
+            // HEADER — page title + subtitle on the left, global feedback
+            // (speaker / vibrate / mute) ringer switch on the right.
             // ----------------------------------------------------------
             const Padding(
               padding: EdgeInsets.fromLTRB(22, 14, 22, 0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Text(
-                    'Settings',
-                    style: TextStyle(
-                      color: Color(0xFF15233D),
-                      fontSize: 30,
-                      fontWeight: FontWeight.w800,
-                      height: 1.1,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Settings',
+                          style: TextStyle(
+                            color: Color(0xFF15233D),
+                            fontSize: 30,
+                            fontWeight: FontWeight.w800,
+                            height: 1.1,
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'Customize your experience',
+                          style: TextStyle(
+                            color: Color(0xFF5A6B8C),
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  SizedBox(height: 4),
-                  Text(
-                    'Customize your experience',
-                    style: TextStyle(
-                      color: Color(0xFF5A6B8C),
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                  SoundModeButton(),
                 ],
               ),
             ),
@@ -73,7 +92,10 @@ class SettingsScreen extends StatelessWidget {
             // ----------------------------------------------------------
             Expanded(
               child: ListenableBuilder(
-                listenable: SettingsService.instance,
+                listenable: Listenable.merge([
+                  SettingsService.instance,
+                  VisoraConfig.instance,
+                ]),
                 builder: (context, _) {
                   final s = SettingsService.instance;
                   return ListView(
@@ -83,6 +105,16 @@ class SettingsScreen extends StatelessWidget {
                       _GroupSection(
                         title: 'Voice & Interaction',
                         rows: [
+                          _SettingRow(
+                            icon: Icons.auto_awesome_rounded,
+                            accent: const Color(0xFF1459C7),
+                            bubble: const Color(0xFFE7F0FF),
+                            title: 'Visora AI',
+                            subtitle: 'Assistant, wake word and AI backend',
+                            semanticLabel: 'Visora AI settings',
+                            status: _visoraStatus(context),
+                            target: const VisoraSettingsScreen(),
+                          ),
                           _SettingRow(
                             icon: Icons.volume_up_rounded,
                             accent: const Color(0xFF1459C7),

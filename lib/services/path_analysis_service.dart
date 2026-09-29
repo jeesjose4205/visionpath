@@ -1,3 +1,5 @@
+import '../models/depth_result.dart';
+import '../models/depth_scene.dart';
 import '../models/detected_object.dart';
 import '../models/object_position.dart';
 import '../models/path_analysis.dart';
@@ -95,5 +97,127 @@ class PathAnalysisService {
       leftMargin: leftMargin,
       rightMargin: rightMargin,
     );
+  }
+
+  // ------------------------------------------------------------------
+  // Depth-augmented path analysis
+  // ------------------------------------------------------------------
+
+  /// Analyze the scene using depth evidence as the primary signal.
+  ///
+  /// Region blocking levels from the depth map (including depth-only,
+  /// "unknown" obstacles) drive the classification; detected-object proximity
+  /// from depth fills in the remaining object-driven cases. Both lateral
+  /// regions blocked -> [PathAnalysis.obstacleCenter] with
+  /// [PathAnalysisResult.pathFullyBlocked] so navigation stops.
+  PathAnalysisResult analyzeWithDepth(
+    List<ObjectWithDepth> objectsWithDepth,
+    DepthScene scene,
+  ) {
+    print('PATH_ANALYSIS_DEPTH_START: ${objectsWithDepth.length} objects');
+
+    final PathRegionAssessment left = scene.regionOf(PathRegion.left);
+    final PathRegionAssessment center = scene.regionOf(PathRegion.center);
+    final PathRegionAssessment right = scene.regionOf(PathRegion.right);
+
+    final bool leftBlocked = left.blockLevel != DepthBlockLevel.open;
+    final bool centerBlocked = center.blockLevel != DepthBlockLevel.open;
+    final bool rightBlocked = right.blockLevel != DepthBlockLevel.open;
+
+    // Free margins from depth evidence.
+    double leftMargin = 1.0;
+    double rightMargin = 1.0;
+    if (centerBlocked) {
+      leftMargin = 0.10;
+      rightMargin = 0.10;
+    }
+    if (leftBlocked) {
+      leftMargin =
+          left.blockLevel == DepthBlockLevel.blocked ? 0.05 : 0.25;
+    }
+    if (rightBlocked) {
+      rightMargin =
+          right.blockLevel == DepthBlockLevel.blocked ? 0.05 : 0.25;
+    }
+    leftMargin = leftMargin.clamp(0.0, 1.0);
+    rightMargin = rightMargin.clamp(0.0, 1.0);
+
+    PathAnalysis primary;
+    bool fullyBlocked = false;
+    if (leftBlocked && rightBlocked) {
+      primary = PathAnalysis.obstacleCenter;
+      fullyBlocked = true;
+    } else if (centerBlocked) {
+      primary = PathAnalysis.obstacleCenter;
+    } else if (leftBlocked) {
+      primary = PathAnalysis.obstacleLeft;
+    } else if (rightBlocked) {
+      primary = PathAnalysis.obstacleRight;
+    } else {
+      // No depth-blocked region: fall back to object-driven assessment.
+      final bool veryNear =
+          objectsWithDepth.any((od) => od.depth.proximity == ProximityLevel.veryNear);
+      primary = veryNear
+          ? PathAnalysis.obstacleCenter
+          : PathAnalysis.clear;
+    }
+
+    final DetectedObject? blocker = _pickBlocker(
+      scene.enrichedObjects,
+      primary,
+    );
+
+    print(
+      'PATH_ANALYSIS_DEPTH_RESULT: $primary '
+      'leftMargin=${leftMargin.toStringAsFixed(2)} '
+      'rightMargin=${rightMargin.toStringAsFixed(2)} '
+      'fullyBlocked=$fullyBlocked '
+      'blocker=${blocker?.displayName ?? 'none'}',
+    );
+
+    return PathAnalysisResult(
+      analysis: primary,
+      primaryBlocker: blocker,
+      leftMargin: leftMargin,
+      rightMargin: rightMargin,
+      pathFullyBlocked: fullyBlocked,
+    );
+  }
+
+  /// Pick the primary blocker from the enriched object list (which includes
+  /// synthesized depth-only obstacles) matching [primary]'s region, highest
+  /// proximity first, then box area.
+  DetectedObject? _pickBlocker(
+    List<DetectedObject> enriched,
+    PathAnalysis primary,
+  ) {
+    if (primary == PathAnalysis.clear) return null;
+
+    final List<DetectedObject> matching = enriched.where((obj) {
+      final double cx = obj.centerX;
+      return switch (primary) {
+        PathAnalysis.clear => false,
+        PathAnalysis.obstacleLeft => cx < 1.0 / 3.0,
+        PathAnalysis.obstacleCenter => cx >= 1.0 / 3.0 && cx <= 2.0 / 3.0,
+        PathAnalysis.obstacleRight => cx > 2.0 / 3.0,
+      };
+    }).toList();
+    if (matching.isEmpty) return null;
+
+    matching.sort((a, b) {
+      // Prefer real, named detections over synthesized depth-only "obstacle"
+      // ghosts so guidance announces "Chair ahead..." instead of the generic
+      // "Obstacle ahead...". The synthesized blob is still the fallback when
+      // no named object occupies the blocked region.
+      final bool ghostA = a.className.toLowerCase() == 'obstacle';
+      final bool ghostB = b.className.toLowerCase() == 'obstacle';
+      if (ghostA != ghostB) return ghostA ? 1 : -1;
+      final int proxDiff = (b.proximity?.index ?? 0) - (a.proximity?.index ?? 0);
+      if (proxDiff != 0) return proxDiff;
+      final double areaA = a.boundingBox.width * a.boundingBox.height;
+      final double areaB = b.boundingBox.width * b.boundingBox.height;
+      return areaB.compareTo(areaA);
+    });
+    return matching.first;
   }
 }

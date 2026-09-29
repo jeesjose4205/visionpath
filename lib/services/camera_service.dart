@@ -30,6 +30,7 @@ class CameraService with ChangeNotifier {
   final int _targetFps = 5;
   int _lastFrameTime = 0;
   int _framesReceived = 0;
+  int _lastFrameLogAt = 0;
   int _framesDispatched = 0;
 
   // Frame processing callback (for navigation AI)
@@ -199,14 +200,7 @@ class CameraService with ChangeNotifier {
   /// silently kills the stream and frames stop arriving forever.
   void _processImageStream(CameraImage image) {
     try {
-      print('CAMERA_CONTROLLER_FRAME_RECEIVED');
-      print('FRAME_PROCESSOR_ENTERED');
-
       _framesReceived++;
-      print('FRAME_CALLBACK_RECEIVED');
-      print('FRAME_WIDTH: ${image.width}');
-      print('FRAME_HEIGHT: ${image.height}');
-      print('FRAME_FORMAT: ${image.format.group}');
 
       // Always keep the latest frame, throttled or not, so inference never
       // sees a stale/null frame while the camera is producing.
@@ -214,14 +208,18 @@ class CameraService with ChangeNotifier {
 
       final int now = DateTime.now().microsecondsSinceEpoch;
 
+      // Frame stats at most ~once per second. Printing on every platform
+      // frame flooded the terminal (~30 fps) on every camera screen.
+      if (now - _lastFrameLogAt > 1000000) {
+        _lastFrameLogAt = now;
+        print('FRAME_TICK: framesReceived=$_framesReceived '
+            'dispatched=$_framesDispatched');
+      }
+
       if (now - _lastFrameTime > (1000000 / _targetFps)) {
         _lastFrameTime = now;
         _framesDispatched++;
-
-        print('FRAME_CALLBACK_DISPATCH: framesReceived=$_framesReceived');
         _onFrameAvailable?.call(image);
-      } else {
-        print('FRAME_CALLBACK_THROTTLED');
       }
     } catch (e, stack) {
       // Never let errors escape the stream callback.

@@ -18,6 +18,8 @@ import '../utils/portrait_rgba.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/face_recognition_overlay.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/sound_mode_button.dart';
+import '../widgets/visora/visora_overlay.dart';
 
 enum _RegStep { details, camera }
 
@@ -102,7 +104,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
 
   void _applyVoiceSettings() {
     final s = SettingsService.instance;
-    final enabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted;
+    final enabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted && !s.vibrateMode;
     _voiceEnabled = enabled;
     _voice.setEnabled(enabled);
     unawaited(_voice.setSpeechRate(s.speechRateValue));
@@ -404,6 +406,11 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
     );
   }
 
+  Future<void> _openVisora() async {
+    if (!mounted) return;
+    await VisoraOverlay.show(context);
+  }
+
   Widget _buildHeader(bool compact) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -441,22 +448,17 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
           ),
           const SizedBox(width: 12),
           _HeaderButton(
-            icon: _voiceEnabled
-                ? Icons.volume_up_outlined
-                : Icons.volume_off_outlined,
-            label: 'Speaker',
-            onTap: _toggleVoice,
+            icon: Icons.auto_awesome_rounded,
+            label: 'Visora AI assistant',
+            onTap: () => unawaited(_openVisora()),
           ),
+          const SizedBox(width: 10),
+          // Ringer switch: sound -> vibrate -> muted.
+          SoundModeButton(),
           const SizedBox(width: 10),
           const SettingsButton(),
         ],
       ),
-    );
-  }
-
-  void _toggleVoice() {
-    SettingsService.instance.setGlobalVoiceMuted(
-      !SettingsService.instance.globalVoiceMuted,
     );
   }
 

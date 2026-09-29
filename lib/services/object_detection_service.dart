@@ -7,6 +7,7 @@ import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 import 'package:camera/camera.dart';
 
 import '../models/detected_object.dart';
+import '../models/rgb_frame.dart';
 
 /// ObjectDetectionService wraps the ultralytics_yolo plugin for YOLO26n inference.
 /// It manages model loading, inference on CameraImage frames, and result processing.
@@ -18,6 +19,7 @@ class ObjectDetectionService with ChangeNotifier {
   List<DetectedObject> _currentObjects = [];
   double _confidenceThreshold = 0.40;
   Size? _detectionInputSize;
+  RgbFrame? _lastRgbFrame;
 
   ObjectDetectionService();
 
@@ -47,6 +49,12 @@ class ObjectDetectionService with ChangeNotifier {
   /// orientation the camera preview is shown in). Null until the first frame
   /// has been processed.
   Size? get detectionInputSize => _detectionInputSize;
+
+  /// The upright, sensor-rotated RGB frame of the MOST RECENT processed
+  /// camera image — exactly what [currentResults] bounding boxes are
+  /// normalized against. Set synchronously when the frame is converted, so it
+  /// is available to depth analysis the moment inference returns.
+  RgbFrame? get lastRgbFrame => _lastRgbFrame;
 
   /// Load the YOLO26n model
   Future<bool> initialize() async {
@@ -255,6 +263,15 @@ class ObjectDetectionService with ChangeNotifier {
     print('YOLO_INPUT_HEIGHT: $rgbHeight');
     _detectionInputSize = Size(rgbWidth.toDouble(), rgbHeight.toDouble());
 
+    // Hand the already-rotated RGB buffer (no second conversion, no copy) to
+    // the depth pipeline so depth cells share the EXACT coordinate space of
+    // the YOLO boxes.
+    _lastRgbFrame = RgbFrame(
+      rgb: rgb,
+      width: rgbWidth,
+      height: rgbHeight,
+    );
+
     // Pad RGB -> RGBA so the frame can be handed to the engine as a pixels
     // buffer, then encode PNG for the native BitmapFactory decoder.
     final Uint8List rgba = Uint8List(rgbWidth * rgbHeight * 4);
@@ -336,6 +353,14 @@ class ObjectDetectionService with ChangeNotifier {
   /// Clear current results
   void clearResults() {
     _currentObjects.clear();
+    notifyListeners();
+  }
+
+  /// Replace the current results with a derived (enriched) list — e.g. the
+  /// detections that came out of position/depth/path analysis. Keeps the
+  /// overlay in sync with the final objects that the pipeline actually used.
+  void setResults(List<DetectedObject> results) {
+    _currentObjects = List<DetectedObject>.of(results);
     notifyListeners();
   }
 

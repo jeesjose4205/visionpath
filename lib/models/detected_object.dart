@@ -25,6 +25,17 @@ class DetectedObject {
   /// Null before that stage runs.
   final ProximityLevel? proximity;
 
+  /// Estimated distance in METERS (assigned by the calibrated depth stage).
+  ///
+  /// Always null until a calibrated metric conversion has run: the system
+  /// never fabricates meters from relative depth alone. Owned by this single
+  /// detection — every box gets its own independently measured value.
+  final double? distanceMeters;
+
+  /// Confidence of the distance estimate (0..1). Low values mean the number
+  /// should be presented as approximate.
+  final double? distanceConfidence;
+
   /// Center X coordinate (normalized)
   final double centerX;
 
@@ -37,6 +48,8 @@ class DetectedObject {
     required this.boundingBox,
     this.position,
     this.proximity,
+    this.distanceMeters,
+    this.distanceConfidence,
   }) : centerX = (boundingBox.left + boundingBox.right) / 2,
        centerY = (boundingBox.top + boundingBox.bottom) / 2;
 
@@ -44,6 +57,8 @@ class DetectedObject {
   DetectedObject copyWith({
     ObjectPosition? position,
     ProximityLevel? proximity,
+    double? distanceMeters,
+    double? distanceConfidence,
   }) {
     return DetectedObject(
       className: className,
@@ -51,7 +66,33 @@ class DetectedObject {
       boundingBox: boundingBox,
       position: position ?? this.position,
       proximity: proximity ?? this.proximity,
+      distanceMeters: distanceMeters ?? this.distanceMeters,
+      distanceConfidence: distanceConfidence ?? this.distanceConfidence,
     );
+  }
+
+  /// True when this detection carries a valid metric estimate.
+  bool get hasDistance => distanceMeters != null;
+
+  /// True when the distance estimate is low-confidence and must be presented
+  /// as approximate rather than precise.
+  bool get distanceLowConfidence =>
+      distanceConfidence != null && distanceConfidence! < 0.35;
+
+  /// "2.4 m" style plain value, or null when no metric estimate exists.
+  /// No approximation marker: used for spoken announcements as-is.
+  String? get distanceValueText {
+    final double? d = distanceMeters;
+    if (d == null) return null;
+    return '${formatDistanceMeters(d)} m';
+  }
+
+  /// "≈ 2.4 m" style value for on-screen labels, or null when no metric
+  /// estimate exists. Approximated prefix is added for low-confidence reads.
+  String? get distanceLabel {
+    final String? value = distanceValueText;
+    if (value == null) return null;
+    return distanceLowConfidence ? '≈ $value' : value;
   }
 
   /// Get horizontal position category as a string (legacy helper).
@@ -77,6 +118,25 @@ class DetectedObject {
 
   @override
   String toString() {
-    return 'DetectedObject(className: $className, confidence: ${confidence * 100}%, box: $boundingBox, position: ${position?.label ?? horizontalPosition}, proximity: ${proximity?.label ?? 'N/A'})';
+    final String distance = distanceMeters == null
+        ? 'N/A'
+        : '${formatDistanceMeters(distanceMeters!)} m';
+    return 'DetectedObject(className: $className, confidence: ${confidence * 100}%, box: $boundingBox, position: ${position?.label ?? horizontalPosition}, proximity: ${proximity?.label ?? 'N/A'}, distance: $distance)';
   }
+}
+
+/// Format a metric distance in meters for human-readable display.
+///
+/// - >= 10 m      -> whole meters ("12 m")
+/// - >= 1 m       -> one decimal ("2.4 m")
+/// - >= 0.5 m     -> one decimal ("0.7 m")
+/// - < 0.5 m      -> two decimals ("0.37 m")
+///
+/// Precision is intentionally coarse so estimates are never presented as
+/// exact measurements.
+String formatDistanceMeters(double meters) {
+  if (!meters.isFinite || meters <= 0) return '0 m';
+  if (meters >= 10) return meters.toStringAsFixed(0);
+  if (meters >= 0.5) return meters.toStringAsFixed(1);
+  return meters.toStringAsFixed(2);
 }

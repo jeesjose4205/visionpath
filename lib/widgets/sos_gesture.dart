@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -58,6 +60,16 @@ class SosGestureOverlay extends StatefulWidget {
     this.zoneHeight = 140,
   });
 
+  /// True from the moment an SOS drag begins until shortly after it ends.
+  ///
+  /// The SOS gesture layer observes pointers with a raw [Listener], so it never
+  /// competes in the gesture arena: every screen underneath ALSO receives the
+  /// same pointer stream. Without this gate, a fast SOS swipe whose path drifts
+  /// sideways lets a screen's own horizontal-swipe handler win the arena too,
+  /// pushing ITS page on top of the Emergency screen. Screens check this flag
+  /// in their swipe handlers and ignore the gesture while it is set.
+  static bool sosSwipeActive = false;
+
   final Widget child;
   final GlobalKey<NavigatorState> navigatorKey;
   final SosRouteObserver observer;
@@ -83,15 +95,16 @@ class _SosGestureOverlayState extends State<SosGestureOverlay>
   double _dragReveal = 0;
   double _screenHeight = 0;
 
-  /// Recent pointer samples used to estimate fling velocity at pointer-up
-  /// (raw pointer events carry no velocity).
-  final List<({Duration t, double y})> _moves = [];
+  /// Watchdog for a pointer session that never terminates (a competing
+  /// recognizer can claim the pointer and swallow the up/cancel). Prevents
+  /// the preview from freezing mid-screen with the gesture permanently stuck.
+  Timer? _watchdog;
 
-  // Opening is deliberately forgiving so a "normal" swipe works (not just a
-  // full-height fling): 35% of the screen, or 12% with a quick fling.
-  static const double _openProgress = 0.35;
-  static const double _fastProgress = 0.12;
-  static const double _fastVelocity = 650;
+  // The SOS gesture only fires once the upward drag has covered 80% of the
+  // screen height, so casual swipes can never pull it open.
+  static const double _openProgress = 0.80;
+
+  static const Duration _watchdogTimeout = Duration(milliseconds: 2000);
 
   /// Minimum upward travel before the preview panel appears (ignores taps).
   static const double _startThreshold = 12;
@@ -113,49 +126,55 @@ class _SosGestureOverlayState extends State<SosGestureOverlay>
 
   @override
   void dispose() {
+    _watchdog?.cancel();
     _anim?.dispose();
     _sheet.dispose();
     super.dispose();
   }
 
-  void _recordMove(Duration t, double y) {
-    _moves.add((t: t, y: y));
-    final cutoff = t - const Duration(milliseconds: 120);
-    while (_moves.isNotEmpty && _moves.first.t < cutoff) {
-      _moves.removeAt(0);
-    }
-    if (_moves.length > 8) _moves.removeAt(0);
+  void _startWatchdog() {
+    _watchdog?.cancel();
+    _watchdog = Timer(_watchdogTimeout, () {
+      if (!_sessionActive || !mounted) return;
+      print('SOS_GESTURE_WATCHDOG_FIRED');
+      // Never yank the panel mid-hold: simply end the session so the pointer
+      // handling loop restarts cleanly. The panel is left untouched here —
+      // whatever is on screen resolves on the next pointer-down/up instead.
+      _sessionActive = false;
+    });
   }
 
-  /// Upward speed (px/s) at pointer-up, estimated from the recent samples.
-  double _flingVelocity(Duration t, double y) {
-    _recordMove(t, y);
-    if (_moves.length < 2) return 0;
-    final first = _moves.first;
-    final last = _moves.last;
-    final dtMs = (last.t - first.t).inMicroseconds;
-    if (dtMs <= 0) return 0;
-    return (first.y - last.y) / (dtMs / 1e6);
+  void _clearWatchdog() {
+    _watchdog?.cancel();
+    _watchdog = null;
   }
 
   void _onPointerDown(PointerDownEvent event) {
-    if (_sessionActive || widget.observer.emergencyOnTop) return;
+    if (widget.observer.emergencyOnTop) return;
     final height = MediaQuery.sizeOf(context).height;
     final inZone = event.position.dy >= height - widget.zoneHeight;
     if (!inZone) return;
 
+    // Always start a fresh session: if a previous pointer-up/cancel was never
+    // delivered, a stale flag must never permanently block the gesture.
+    // Stop any in-flight return animation and hide the panel outright so a
+    // fresh drag starts from a clean slate.
+    _anim?.stop();
+    SosGestureOverlay.sosSwipeActive = true;
     _screenHeight = height;
     _startX = event.position.dx;
     _startY = event.position.dy;
     _dragReveal = 0;
-    _moves.clear();
+    _sheet.value = 0;
     _sessionActive = true;
+    _startWatchdog();
   }
 
   void _onPointerMove(PointerMoveEvent event) {
     if (!_sessionActive) return;
 
-    _recordMove(event.timeStamp, event.position.dy);
+    // Any progress (or hover) resets the stall watchdog.
+    _startWatchdog();
 
     final upward = _startY - event.position.dy;
     final horizontal = (event.position.dx - _startX).abs();
@@ -164,6 +183,7 @@ class _SosGestureOverlayState extends State<SosGestureOverlay>
     // horizontal swipe handlers; drop the SOS session without opening.
     if (horizontal > upward.abs() && horizontal > _dropSlop) {
       _sessionActive = false;
+      _clearWatchdog();
       return;
     }
 
@@ -174,40 +194,60 @@ class _SosGestureOverlayState extends State<SosGestureOverlay>
   }
 
   void _onPointerUp(PointerUpEvent event) {
-    if (!_sessionActive) return;
-
-    final upVelocity = _flingVelocity(event.timeStamp, event.position.dy);
-    final progress = _screenHeight <= 0 ? 0.0 : _dragReveal / _screenHeight;
-    final shouldOpen = progress >= _openProgress ||
-        (progress >= _fastProgress && upVelocity >= _fastVelocity);
-
+    _clearWatchdog();
+    // Resolve unconditionally: even if the watchdog already ended the session
+    // while the finger lingered, a release must still close any visible panel
+    // so the previous screen is always returned to. Never leave `_sheet` up.
+    final wasActive = _sessionActive;
     _sessionActive = false;
 
-    if (shouldOpen) {
-      _openSos();
+    final progress = _screenHeight <= 0 ? 0.0 : _dragReveal / _screenHeight;
+    print('SOS_GESTURE_UP active=$wasActive progress=${progress.toStringAsFixed(2)}');
+    if (wasActive && progress >= _openProgress && !widget.observer.emergencyOnTop) {
+      _openSos(progress: progress);
     } else {
       _snapBack();
     }
+    _releaseSwipeGate();
   }
 
   void _onPointerCancel(PointerCancelEvent event) {
-    if (!_sessionActive) return;
+    _clearWatchdog();
     _sessionActive = false;
     _snapBack();
+    _releaseSwipeGate();
   }
 
-  /// Pushes the real EmergencyScreen (only after the finger has lifted) with
-  /// a slide-up transition, then hides the preview panel.
-  void _openSos() {
-    HapticFeedback.heavyImpact();
+  /// Clears [SosGestureOverlay.sosSwipeActive] after a short delay.
+  ///
+  /// The gate must stay up through the whole pointer-up dispatch, because a
+  /// screen's own swipe recognizer resolves and pushes in the SAME event turn
+  /// (after the overlay's raw listener). Clearing here is deferred so that late
+  /// cross-screen navigations are still suppressed, while normal swipes resume
+  /// right away.
+  void _releaseSwipeGate() {
+    Future<void>.delayed(const Duration(milliseconds: 300), () {
+      SosGestureOverlay.sosSwipeActive = false;
+    });
+  }
+
+  /// Pushes the real EmergencyScreen (only after the finger has lifted). The
+  /// drag has already carried the screen to ~80%+, so instead of restarting
+  /// from the bottom the real screen CONTINUES from the height the reach
+  /// reached and springs only the remaining distance to the top. One
+  /// continuous motion from the finger — it never restarts or freezes.
+  void _openSos({required double progress}) {
     _sheet.value = 0;
+    HapticFeedback.heavyImpact();
     final navigator = widget.navigatorKey.currentState;
     if (navigator == null || widget.observer.emergencyOnTop) return;
 
+    final remaining = (1.0 - progress).clamp(0.0, 1.0);
     final route = PageRouteBuilder<void>(
       settings: const RouteSettings(name: kSosRouteName),
-      transitionDuration: const Duration(milliseconds: 280),
-      reverseTransitionDuration: const Duration(milliseconds: 220),
+      transitionDuration:
+          Duration(milliseconds: (100 + (280 * remaining)).round()),
+      reverseTransitionDuration: const Duration(milliseconds: 240),
       pageBuilder: (context, animation, secondaryAnimation) =>
           const EmergencyScreen(),
       transitionsBuilder: (context, animation, secondaryAnimation, child) {
@@ -215,34 +255,26 @@ class _SosGestureOverlayState extends State<SosGestureOverlay>
             CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
         return SlideTransition(
           position: Tween<Offset>(
-            begin: const Offset(0, 1),
+            begin: Offset(0, remaining),
             end: Offset.zero,
           ).animate(curved),
-          child: FadeTransition(
-            opacity: Tween<double>(begin: 0.8, end: 1).animate(curved),
-            child: child,
-          ),
+          child: child,
         );
       },
     );
     navigator.push(route);
   }
 
-  /// Animates the preview panel back down after a cancelled/non-qualifying
-  /// swipe.
+  /// Closes the preview after a cancelled/non-qualifying (<80%) swipe.
+  ///
+  /// Deliberately ticker-free: the panel simply disappears so the previous
+  /// screen is shown again. A sub-80% swipe never opens SOS — there is no
+  /// animation to render and nothing that could freeze on any device.
   void _snapBack() {
-    if (_sheet.value == 0) return;
-    final from = _sheet.value;
+    _anim?.stop();
     _anim?.dispose();
-    _anim = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 180),
-    );
-    _anim!.addListener(() {
-      _sheet.value =
-          from * (1 - Curves.easeOutCubic.transform(_anim!.value));
-    });
-    _anim!.forward();
+    _anim = null;
+    _sheet.value = 0;
   }
 
   @override

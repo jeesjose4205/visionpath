@@ -87,11 +87,11 @@ void main() {
   }
 
   Future<void> popUntilNavigate(WidgetTester tester) async {
-    Navigator.of(tester.element(find.byType(NavigateScreen))).popUntil(
-      (route) => route.isFirst,
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
+    // The root route may be offstage (hidden under a settled route above it),
+    // so look for it even when the Navigator marks it offstage.
+    Navigator.of(tester.element(find.byType(NavigateScreen, skipOffstage: false)))
+        .popUntil((route) => route.isFirst);
+    await tester.pumpAndSettle();
   }
 
   testWidgets('Navigate is the root screen: swipes open pages and back',
@@ -105,7 +105,7 @@ void main() {
     // Navigate -> swipe LEFT -> Familiar Faces.
     await tester.fling(find.byType(NavigateScreen), const Offset(-320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(FamiliarFacesScreen), findsOneWidget);
 
     // Familiar Faces -> swipe RIGHT -> back to Navigate.
@@ -115,21 +115,22 @@ void main() {
       900,
     );
     await tester.pump();
-    // Navigate holds its swipe lock for ~450ms after the pop so the popped
-    // screen can tear down the shared TTS engine before the greeting speaks.
-    await tester.pump(const Duration(milliseconds: 520));
+    // Navigate holds its swipe lock until the popped screen has fully torn
+    // down the shared TTS engine (~930ms: 680ms reverse transition + buffer)
+    // before the return greeting speaks.
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(NavigateScreen), findsOneWidget);
 
     // Navigate -> swipe RIGHT -> Read Text.
     await tester.fling(find.byType(NavigateScreen), const Offset(320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(ReadTextScreen), findsOneWidget);
 
     // Read Text -> swipe LEFT -> back to Navigate.
     await tester.fling(find.byType(ReadTextScreen), const Offset(-320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 520));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(NavigateScreen), findsOneWidget);
   });
 
@@ -140,7 +141,7 @@ void main() {
 
     await tester.fling(find.byType(NavigateScreen), const Offset(-320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(FamiliarFacesScreen), findsOneWidget);
 
     await tester.fling(
@@ -149,25 +150,25 @@ void main() {
       900,
     );
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 520));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(NavigateScreen), findsOneWidget);
     expect(find.byType(FamiliarFacesScreen, skipOffstage: false), findsNothing);
 
     await tester.fling(find.byType(NavigateScreen), const Offset(320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(ReadTextScreen), findsOneWidget);
 
     await tester.fling(find.byType(ReadTextScreen), const Offset(-320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 520));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(NavigateScreen), findsOneWidget);
     expect(find.byType(ReadTextScreen, skipOffstage: false), findsNothing);
 
     // Re-enter Familiar Faces: the stack never accumulates stale copies.
     await tester.fling(find.byType(NavigateScreen), const Offset(-320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(FamiliarFacesScreen, skipOffstage: false), findsOneWidget);
   });
 
@@ -179,7 +180,7 @@ void main() {
     // On Familiar Faces, a LEFT swipe (no page defined past it) does nothing.
     await tester.fling(find.byType(NavigateScreen), const Offset(-320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(FamiliarFacesScreen), findsOneWidget);
 
     await tester.fling(
@@ -188,19 +189,19 @@ void main() {
       900,
     );
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(FamiliarFacesScreen), findsOneWidget);
 
     // On Read Text, a RIGHT swipe (no page defined past it) does nothing.
     await popUntilNavigate(tester);
     await tester.fling(find.byType(NavigateScreen), const Offset(320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(ReadTextScreen), findsOneWidget);
 
     await tester.fling(find.byType(ReadTextScreen), const Offset(320, 0), 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
     expect(find.byType(ReadTextScreen), findsOneWidget);
   });
 
@@ -211,7 +212,7 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(milliseconds: 950));
 
     expect(find.byType(SettingsScreen), findsOneWidget);
 

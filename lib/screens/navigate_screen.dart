@@ -1,14 +1,18 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/detected_object.dart';
+import '../models/depth_scene.dart';
 import '../models/navigation_decision.dart';
 import '../models/path_analysis.dart';
 import '../models/app_settings.dart';
+import '../models/rgb_frame.dart';
 import '../services/camera_service.dart';
+import '../services/depth/depth_engine.dart';
 import '../services/depth_analysis_service.dart';
 import '../services/instruction_manager.dart';
 import '../services/navigation_service.dart';
@@ -16,10 +20,18 @@ import '../services/object_detection_service.dart';
 import '../services/path_analysis_service.dart';
 import '../services/position_detection_service.dart';
 import '../services/settings_service.dart';
+import '../services/vibration_service.dart';
 import '../services/voice_service.dart';
+import '../services/visora/visora_config.dart';
+import '../services/visora/visora_session.dart';
+import '../services/visora/visora_wake_word.dart';
 import '../widgets/camera_preview_fit.dart';
+import '../widgets/depth_debug_overlay.dart';
 import '../widgets/detection_overlay.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/sos_gesture.dart';
+import '../widgets/sound_mode_button.dart';
+import '../widgets/visora/visora_overlay.dart';
 import 'familiar_faces_screen.dart';
 import 'read_text_screen.dart';
 
@@ -54,9 +66,18 @@ class NavigateScreen extends StatefulWidget {
 
 class _NavigateScreenState extends State<NavigateScreen>
     with SingleTickerProviderStateMixin {
+  // Carousel paging transition: the route keeps these exact timings, and the
+  // return-greeting below waits them out too — a shorter wait would let the
+  // popped screen's dispose() -> _voice.stop() cut the greeting mid-word.
+  static const _kPushDuration = Duration(milliseconds: 800);
+  static const _kReverseDuration = Duration(milliseconds: 680);
+
   _NavState _navState = _NavState.idle;
   bool _voiceGuidance = true;
   DateTime _greetingGuardUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // Visora assistant: wake-word detector armed while this screen is live.
+  VisoraWakeWordDetector? _wakeWord;
 
   // ------------------------------------------------------------
   // INTRODUCTORY TITLE CARD
@@ -79,6 +100,11 @@ class _NavigateScreenState extends State<NavigateScreen>
   int _inferenceTicks = 0;
   int _framesObserved = 0;
 
+  // Guards late in-flight inferences that are still awaiting when the user
+  // stops navigation: a finished blob must never flip the UI back into a
+  // running state, speak, or refresh results after STOP.
+  int _runGeneration = 0;
+
   CameraImage? _latestCameraImage;
 
   // Pipeline services (stateful pieces owned by this screen).
@@ -87,6 +113,12 @@ class _NavigateScreenState extends State<NavigateScreen>
 
   ObjectDetectionService? _objectDetectionService;
   NavigationService? _navigationService;
+
+  // Depth analysis (relative, on-device). `_depthStatusText` drives the small
+  // DEPTH chip over the preview; `_activeDepthScene` feeds the debug overlay.
+  DepthAnalysisService? _depthService;
+  String _depthStatusText = 'DEPTH OFF';
+  DepthScene? _activeDepthScene;
 
   // ------------------------------------------------------------
   // SWIPE NAVIGATION (this screen is the main/centre page)
@@ -108,7 +140,7 @@ class _NavigateScreenState extends State<NavigateScreen>
   }
 
   void _onSwipeEnd(DragEndDetails details) {
-    if (_swipeNavLocked || !mounted) return;
+    if (_swipeNavLocked || SosGestureOverlay.sosSwipeActive || !mounted) return;
 
     final velocity = details.primaryVelocity ?? 0;
     final distance = _swipeDx;
@@ -123,7 +155,7 @@ class _NavigateScreenState extends State<NavigateScreen>
   /// Opens the page on the chosen side with a subtle horizontal slide.
   /// Locked while a page is up so one swipe can never trigger twice.
   Future<void> _pushSide(bool fromRight) async {
-    if (_swipeNavLocked || !mounted) return;
+    if (_swipeNavLocked || SosGestureOverlay.sosSwipeActive || !mounted) return;
 
     final Widget screen = fromRight
         ? const FamiliarFacesScreen()
@@ -132,27 +164,40 @@ class _NavigateScreenState extends State<NavigateScreen>
     _swipeNavLocked = true;
     await Navigator.of(context).push(
       PageRouteBuilder<void>(
-        transitionDuration: const Duration(milliseconds: 260),
-        reverseTransitionDuration: const Duration(milliseconds: 220),
+        transitionDuration: _kPushDuration,
+        reverseTransitionDuration: _kReverseDuration,
         pageBuilder: (context, animation, secondaryAnimation) => screen,
+        // Carousel: the screens move together on a single horizontal track, like a
+        // photo pager. The incoming screen tracks in from the swipe side while
+        // the outgoing screen slides away in the same direction; the same
+        // motion plays in reverse when swiping/backing out of the opened screen.
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          final offset = Tween<Offset>(
-            begin: Offset(fromRight ? 1 : -1, 0),
-            end: Offset.zero,
-          ).chain(CurveTween(curve: Curves.easeOutCubic));
-          return SlideTransition(
-            position: animation.drive(offset),
+          final side = fromRight ? 1.0 : -1.0;
+          return AnimatedBuilder(
+            animation: Listenable.merge([animation, secondaryAnimation]),
             child: child,
+            builder: (context, child) {
+              final t = Curves.easeInOutCubic.transform(animation.value);
+              final s = Curves.easeInOutCubic.transform(secondaryAnimation.value);
+              // Covered route (t=1): slides out opposite to the incoming side.
+              // Incoming route (s=0): slides in from the incoming side to rest.
+              final dx = side * (1 - t - s);
+              return FractionalTranslation(
+                translation: Offset(dx, 0),
+                child: child,
+              );
+            },
           );
         },
       ),
     );
-    // The pop future resolves immediately, but the popped screen still runs
-    // dispose() -> _voice.stop() ~220ms later (after its exit animation).
-    // flutter_tts shares ONE native engine, so that stop would cut the
-    // greeting off mid-word ("nav..."). Wait until the old screen has fully
-    // torn down before announcing the return, keeping the swipe lock held.
-    await Future<void>.delayed(const Duration(milliseconds: 450));
+    // The pop future resolves the instant the route is popped, but the popped
+    // screen is only unmounted (running dispose() -> _voice.stop()) after its
+    // exit animation finishes. flutter_tts shares ONE native engine, so that
+    // late stop would cut the greeting off mid-word ("nav..."). Hold the swipe
+    // lock and announce only after the old screen has fully torn down.
+    await Future<void>.delayed(_kReverseDuration);
+    await Future<void>.delayed(const Duration(milliseconds: 250));
     _swipeNavLocked = false;
     if (mounted) _speakNavigationGreeting();
   }
@@ -178,13 +223,55 @@ class _NavigateScreenState extends State<NavigateScreen>
     _applySettings();
     SettingsService.instance.addListener(_applySettings);
     _initializeObjectDetection();
+    _initializeDepthAnalysis();
     _introController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 460),
     )..forward();
+    _initVisora();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _speakNavigationGreeting();
+      if (!mounted) return;
+      // Pre-warm the camera controller so START NAVIGATION reveals a live
+      // preview immediately instead of a frozen black rectangle while the
+      // camera wakes up (~1-2s on a cold start).
+      unawaited(
+        Provider.of<CameraService>(context, listen: false).initializeController(),
+      );
+      _speakNavigationGreeting();
     });
+  }
+
+  // ------------------------------------------------------------
+  // VISORA ASSISTANT (wake word + web speech host)
+  // ------------------------------------------------------------
+
+  void _initVisora() {
+    // Widget tests have no platform plugins and no native speech stack;
+    // the loopback HTTP server for the hidden WebView also leaves timers
+    // that fail the test harness. Skip the whole assistant bootstrap there.
+    if (Platform.environment['FLUTTER_TEST'] != null) return;
+    // The hidden Google speech WebView (hosted at the bottom of the body)
+    // must be bound to its loopback server once, or its recognizer never
+    // becomes ready inside the assistant overlay.
+    unawaited(VisoraSession.instance.webEngine.start());
+    if (!VisoraConfig.instance.wakeWordEnabled) return;
+    _wakeWord = VisoraWakeWordDetector();
+    _wakeWord!.onWake = () => unawaited(_openVisora(autoListen: true));
+    unawaited(_wakeWord!.start());
+  }
+
+  /// Open the Visora assistant as an overlay above this screen.
+  Future<void> _openVisora({bool autoListen = false}) async {
+    if (!mounted) return;
+    // Hands-free activation hands the microphone to the assistant; the wake
+    // word pauses while they talk and resumes when the overlay closes.
+    await _wakeWord?.stop();
+    if (!mounted) return;
+    await VisoraOverlay.show(context, autoListen: autoListen);
+    if (mounted) {
+      final w = _wakeWord;
+      if (w != null) unawaited(w.start());
+    }
   }
 
   /// Applies persisted settings to this screen's live services.
@@ -213,6 +300,32 @@ class _NavigateScreenState extends State<NavigateScreen>
         _instructionManager.repeatCooldown = const Duration(milliseconds: 6000);
         break;
     }
+    final DepthAnalysisService? depth = _depthService;
+    if (depth != null) {
+      _depthStatusText = _depthStatusLabel(depth);
+    }
+  }
+
+  /// Status text for the DEPTH chip over the camera preview.
+  String _depthStatusLabel(DepthAnalysisService depth) {
+    if (!SettingsService.instance.depthAnalysisEnabled) return 'DEPTH OFF';
+    if (depth.engineStatus == DepthEngineStatus.ready) return 'DEPTH ACTIVE';
+    if (depth.engineStatus == DepthEngineStatus.loading) return 'DEPTH LOADING';
+    return 'DEPTH FALLBACK';
+  }
+
+  /// Accent color for the DEPTH chip.
+  Color get _depthStatusColor {
+    switch (_depthStatusText) {
+      case 'DEPTH ACTIVE':
+        return const Color(0xFF198754);
+      case 'DEPTH LOADING':
+        return const Color(0xFF175CD3);
+      case 'DEPTH OFF':
+        return const Color(0xFF475467);
+      default:
+        return const Color(0xFFE8590C);
+    }
   }
 
   @override
@@ -220,6 +333,7 @@ class _NavigateScreenState extends State<NavigateScreen>
     SettingsService.instance.removeListener(_applySettings);
     _inferenceTimer?.cancel();
     _introController.dispose();
+    _wakeWord?.dispose();
     _instructionManager.reset();
     _voiceService.stop();
     super.dispose();
@@ -264,6 +378,23 @@ class _NavigateScreenState extends State<NavigateScreen>
   }
 
   // ------------------------------------------------------------
+  // INITIALIZE DEPTH ANALYSIS
+  // ------------------------------------------------------------
+
+  Future<void> _initializeDepthAnalysis() async {
+    print('NAVIGATE_INIT_DEPTH_START');
+    _depthService = Provider.of<DepthAnalysisService>(context, listen: false);
+    if (_depthService == null) return;
+
+    final bool ok = await _depthService!.initialize();
+    print('NAVIGATE_INIT_DEPTH_COMPLETE: success=$ok');
+    if (!mounted) return;
+    setState(() {
+      _depthStatusText = _depthStatusLabel(_depthService!);
+    });
+  }
+
+  // ------------------------------------------------------------
   // START NAVIGATION
   // ------------------------------------------------------------
 
@@ -297,6 +428,7 @@ class _NavigateScreenState extends State<NavigateScreen>
     _dismissIntroCard();
 
     setState(() => _navState = _NavState.starting);
+    _runGeneration++;
 
     // 1. Ensure camera is initialized (single controller).
     final CameraService cameraService =
@@ -333,11 +465,16 @@ class _NavigateScreenState extends State<NavigateScreen>
     _inferenceTicks = 0;
     _framesObserved = 0;
     _inferenceInProgress = false;
+    Provider.of<DepthAnalysisService>(context, listen: false).reset();
 
     setState(() {
       _navState = _NavState.cameraReady;
       _detectionStatus = '';
       _detectedObject = 'No objects detected';
+      _activeDepthScene = null;
+      _depthStatusText = _depthStatusLabel(
+        Provider.of<DepthAnalysisService>(context, listen: false),
+      );
     });
 
     // 4. Begin the 5 FPS sampling loop with single-flight inference.
@@ -402,6 +539,12 @@ class _NavigateScreenState extends State<NavigateScreen>
 
     if (ods == null || nav == null || !mounted) return;
 
+    // Capture the run this inference belongs to; results are dropped when
+    // the user starts/stops navigation while the awaits are in flight.
+    final int run = _runGeneration;
+    bool stale() => !mounted || run != _runGeneration ||
+        _navState == _NavState.stopped || _navState == _NavState.idle;
+
     // Transition CAMERA_READY -> ANALYZING on the first processed frame.
     if (_navState == _NavState.cameraReady) {
       setState(() => _navState = _NavState.analyzing);
@@ -423,7 +566,7 @@ class _NavigateScreenState extends State<NavigateScreen>
       return;
     }
 
-    if (!mounted) return;
+    if (stale()) return;
 
     // Confidence filtering already applied via predict's confidenceThreshold.
 
@@ -432,15 +575,34 @@ class _NavigateScreenState extends State<NavigateScreen>
         Provider.of<PositionDetectionService>(context, listen: false);
     detections = positionService.analyze(detections);
 
-    // Approximate proximity/depth analysis.
+    // Depth analysis: real relative-depth scene when the engine is usable,
+    // otherwise the legacy box-area heuristic. Never blocks the stream.
     final DepthAnalysisService depthService =
         Provider.of<DepthAnalysisService>(context, listen: false);
-    detections = depthService.analyze(detections);
+    final RgbFrame? frame = ods.lastRgbFrame;
 
-    // Path analysis: is the walking path obstructed?
-    final PathAnalysisService pathService =
-        Provider.of<PathAnalysisService>(context, listen: false);
-    final PathAnalysisResult path = pathService.analyze(detections);
+    PathAnalysisResult path;
+    DepthScene? scene;
+    if (depthService.engineUsable && frame != null) {
+      scene = await depthService.analyzeScene(frame, detections);
+      detections = scene.enrichedObjects;
+
+      final PathAnalysisService pathService =
+          Provider.of<PathAnalysisService>(context, listen: false);
+      path = pathService.analyzeWithDepth(scene.objectsWithDepth, scene);
+    } else {
+      detections = depthService.analyze(detections);
+
+      final PathAnalysisService pathService =
+          Provider.of<PathAnalysisService>(context, listen: false);
+      path = pathService.analyze(detections);
+    }
+
+    if (stale()) return;
+
+    // Feed the final (enriched) detections back to the overlay so every
+    // bounding box shows the object's own calibrated distance.
+    ods.setResults(detections);
 
     // Navigation decision.
     nav.decide(path, detections);
@@ -452,17 +614,24 @@ class _NavigateScreenState extends State<NavigateScreen>
         DateTime.now().isBefore(_greetingGuardUntil);
     if (speak &&
         !greetingActive &&
-        _voiceGuidance &&
-        _allowAnnouncement(decision, path.primaryBlocker)) {
-      _voiceService.speak(nav.lastSpokenMessage);
+        _allowAnnouncement(decision, path.primaryBlocker) &&
+        !stale()) {
+      if (SettingsService.instance.vibrateMode) {
+        // Ringer in vibrate mode: haptics replace the spoken guidance.
+        VibrationService.instance.vibrateNavigation();
+      } else if (_voiceGuidance) {
+        _voiceService.speak(nav.lastSpokenMessage);
+      }
     }
 
-    if (!mounted) return;
+    if (!mounted || stale()) return;
 
     setState(() {
       _inferenceTicks++;
       _navState = _mapDecisionToState(decision);
       _updateDetectionFields(detections);
+      _activeDepthScene = scene;
+      _depthStatusText = _depthStatusLabel(depthService);
     });
   }
 
@@ -591,10 +760,25 @@ class _NavigateScreenState extends State<NavigateScreen>
   Future<void> _stopNavigation() async {
     print('NAVIGATE_STOP_PRESSED');
 
+    // Marks any in-flight inference belonging to the old run as stale BEFORE
+    // any await, so it cannot re-enable the pipeline, speak, or overwrite the
+    // stopped state once it finally returns.
+    _runGeneration++;
     _inferenceTimer?.cancel();
 
     _instructionManager.reset();
     _voiceService.stop();
+    VibrationService.instance.stopVibration();
+
+    if (!mounted) return;
+
+    setState(() {
+      _navState = _NavState.stopped;
+      _latestCameraImage = null;
+      _activeDepthScene = null;
+      _detectionStatus = '';
+      _detectedObject = 'No objects detected';
+    });
 
     final CameraService cameraService =
         Provider.of<CameraService>(context, listen: false);
@@ -602,25 +786,11 @@ class _NavigateScreenState extends State<NavigateScreen>
 
     _objectDetectionService?.stop();
     _navigationService?.reset();
-    _latestCameraImage = null;
+    Provider.of<DepthAnalysisService>(context, listen: false).reset();
 
     if (!mounted) return;
 
-    setState(() {
-      _navState = _NavState.stopped;
-      _detectionStatus = '';
-      _detectedObject = 'No objects detected';
-    });
     _presentIntroCard();
-  }
-
-  // ------------------------------------------------------------
-  // VOICE TOGGLE
-  // ------------------------------------------------------------
-
-  void _toggleVoiceGuidance() {
-    final s = SettingsService.instance;
-    unawaited(s.setGlobalVoiceMuted(!s.globalVoiceMuted));
   }
 
   // ------------------------------------------------------------
@@ -663,7 +833,12 @@ class _NavigateScreenState extends State<NavigateScreen>
           if (_navState != _NavState.idle && _navState != _NavState.stopped) {
             await _stopNavigation();
           }
-          if (context.mounted) Navigator.of(context).pop();
+          // This screen is the app's root route: once navigation has been
+          // stopped there is nothing to pop back to, and popping the root
+          // throws. Only pop when a screen actually sits underneath.
+          if (!mounted) return;
+          final navigator = Navigator.of(context);
+          if (navigator.canPop()) navigator.pop();
         },
 
         child: Scaffold(
@@ -713,9 +888,31 @@ class _NavigateScreenState extends State<NavigateScreen>
                   ),
                 ),
               ),
+              _visoraWebViewHost(),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  /// Visora's hidden Google speech WebView: 1x1, no paint, no input. It must
+  /// stay mounted while this screen is open so the session's recognizer is
+  /// ready the moment the assistant overlay asks for the microphone.
+  Widget _visoraWebViewHost() {
+    // Widget tests set FLUTTER_TEST; the native InAppWebView has no platform
+    // channel there, so skip hosting it (the recognizer is unused in tests).
+    if (Platform.environment['FLUTTER_TEST'] != null) {
+      return const SizedBox.shrink();
+    }
+    return SizedBox(
+      width: 1,
+      height: 1,
+      child: Opacity(
+        opacity: 0,
+        child: IgnorePointer(
+          child: ClipRect(child: VisoraSession.instance.webEngine.build()),
         ),
       ),
     );
@@ -764,13 +961,17 @@ class _NavigateScreenState extends State<NavigateScreen>
 
           const SizedBox(width: 12),
 
-          // Voice status toggle
+          // Visora AI assistant
           _HeaderButton(
-            icon: SettingsService.instance.globalVoiceMuted
-                ? Icons.volume_off_outlined
-                : Icons.volume_up_outlined,
-            onTap: _toggleVoiceGuidance,
+            icon: Icons.auto_awesome_rounded,
+            label: 'Visora AI assistant',
+            onTap: () => unawaited(_openVisora()),
           ),
+
+          const SizedBox(width: 10),
+
+          // Ringer switch: sound -> vibrate -> muted.
+          SoundModeButton(),
 
           const SizedBox(width: 10),
 
@@ -868,6 +1069,36 @@ class _NavigateScreenState extends State<NavigateScreen>
                           ),
                         ),
                       ),
+
+                      // Depth status chip (top-right, mirrors the AI pill).
+                      Positioned(
+                        top: 14,
+                        right: 14,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 7,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _depthStatusColor.withOpacity(0.55),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            _depthStatusText,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      // Depth debug overlay (opt-in, troubleshooting only).
+                      if (SettingsService.instance.depthDebugOverlay &&
+                          _activeDepthScene != null)
+                        DepthDebugOverlay(scene: _activeDepthScene!),
 
                       // Detection status (bottom-left).
                       Positioned(
@@ -1161,28 +1392,37 @@ class _NavigateScreenState extends State<NavigateScreen>
 class _HeaderButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
+  final String? label;
 
-  const _HeaderButton({required this.icon, required this.onTap});
+  const _HeaderButton({
+    required this.icon,
+    required this.onTap,
+    this.label,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(13),
-      child: InkWell(
-        onTap: onTap,
+    return Semantics(
+      button: true,
+      label: label,
+      child: Material(
+        color: Colors.white,
         borderRadius: BorderRadius.circular(13),
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(13),
-            border: Border.all(color: const Color(0xFFE4E7EC)),
-          ),
-          child: Icon(
-            icon,
-            color: const Color(0xFF344054),
-            size: 21,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(13),
+          child: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: const Color(0xFFE4E7EC)),
+            ),
+            child: Icon(
+              icon,
+              color: const Color(0xFF344054),
+              size: 21,
+            ),
           ),
         ),
       ),

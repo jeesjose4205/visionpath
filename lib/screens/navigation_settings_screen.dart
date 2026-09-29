@@ -44,6 +44,101 @@ class NavigationSettingsScreen extends StatelessWidget {
                   ],
                 ),
               ),
+              const SettingsSectionTitle('Depth Analysis'),
+              SettingsCard(
+                child: Column(
+                  children: [
+                    SettingsToggle(
+                      title: 'Depth Analysis',
+                      description:
+                          'Use the on-device relative-depth engine to refine '
+                          'obstacle proximity and path blocking. When off or '
+                          'unavailable, the app falls back to box-size '
+                          'estimates. Depth is always relative, never exact '
+                          'distance.',
+                      value: s.depthAnalysisEnabled,
+                      onChanged: (v) {
+                        HapticFeedback.selectionClick();
+                        s.setDepthAnalysisEnabled(v);
+                      },
+                    ),
+                    _divider(),
+                    SettingsToggle(
+                      title: 'Depth Debug Overlay',
+                      description:
+                          'Show the depth regions (LEFT / CENTER / RIGHT), '
+                          'blocking level and relative depth over the camera '
+                          'preview. For troubleshooting only.',
+                      value: s.depthDebugOverlay,
+                      onChanged: (v) {
+                        HapticFeedback.selectionClick();
+                        s.setDepthDebugOverlay(v);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SettingsSectionTitle('Distance Calibration'),
+              SettingsCard(
+                child: Column(
+                  children: [
+                    SettingsToggle(
+                      title: 'Distance Estimates',
+                      description:
+                          'Estimate each detected object\u2019s distance in '
+                          'meters below its bounding box. Distances are '
+                          'calibrated estimates, not exact measurements.',
+                      value: s.metricDistanceEnabled,
+                      onChanged: (v) {
+                        HapticFeedback.selectionClick();
+                        s.setMetricDistanceEnabled(v);
+                      },
+                    ),
+                    _divider(),
+                    SettingsChoice(
+                      title: 'Phone Height',
+                      description:
+                          'How high the phone is typically held when '
+                          'navigating. Lower = closer-looking estimates.',
+                      selected: _heightLabel(s.cameraHeightMeters),
+                      choices: const [
+                        (label: '1.2 m (waist)', value: 'h12'),
+                        (label: '1.5 m (chest)', value: 'h15'),
+                        (label: '1.8 m (eye)', value: 'h18'),
+                      ],
+                      onSelected: (v) {
+                        final double h = switch (v) {
+                          'h12' => 1.2,
+                          'h18' => 1.8,
+                          _ => 1.5,
+                        };
+                        s.setCameraHeightMeters(h);
+                      },
+                    ),
+                    _divider(),
+                    SettingsChoice(
+                      title: 'Phone Tilt',
+                      description:
+                          'How far the phone is pointed toward the floor. '
+                          'More tilt = objects read as nearer.',
+                      selected: _tiltLabel(s.cameraPitchDegrees),
+                      choices: const [
+                        (label: '10\u00B0 (mostly level)', value: 't10'),
+                        (label: '20\u00B0 (slight tilt)', value: 't20'),
+                        (label: '30\u00B0 (pointed down)', value: 't30'),
+                      ],
+                      onSelected: (v) {
+                        final double t = switch (v) {
+                          't10' => 10.0,
+                          't30' => 30.0,
+                          _ => 20.0,
+                        };
+                        s.setCameraPitchDegrees(t);
+                      },
+                    ),
+                  ],
+                ),
+              ),
               const SettingsSectionTitle('Warnings'),
               SettingsCard(
                 child: Column(
@@ -106,6 +201,18 @@ Widget _divider() => const Divider(height: 1, color: settingsBorder);
 
 String _sensitivityLabel(ObstacleSensitivity v) =>
     v.name[0].toUpperCase() + v.name.substring(1);
+
+String _heightLabel(double h) => switch (h) {
+      1.2 => '1.2 m (waist)',
+      1.8 => '1.8 m (eye)',
+      _ => '1.5 m (chest)',
+    };
+
+String _tiltLabel(double t) => switch (t) {
+      10 => '10\u00B0 (mostly level)',
+      30 => '30\u00B0 (pointed down)',
+      _ => '20\u00B0 (slight tilt)',
+    };
 
 String _guidanceModeLabel(GuidanceMode v) {
   switch (v) {

@@ -31,10 +31,15 @@ class PathAnalysisResult {
   /// right side (0.0-1.0).
   final double rightMargin;
 
+  /// True when BOTH lateral walking regions are blocked (depth evidence), so
+  /// the navigation engine should stop rather than pick a side.
+  final bool pathFullyBlocked;
+
   const PathAnalysisResult({
     required this.analysis,
     this.primaryBlocker,
     required this.leftMargin,
     required this.rightMargin,
+    this.pathFullyBlocked = false,
   });
 }

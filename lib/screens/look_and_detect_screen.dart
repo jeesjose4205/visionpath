@@ -29,6 +29,7 @@ import '../utils/portrait_rgba.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/detection_overlay.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/sound_mode_button.dart';
 
 /// Look & Detect — a live, voice-first visual assistant integrated with the
 /// existing VisionPath AI camera + YOLO + face-recognition services.
@@ -105,7 +106,8 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
     final s = SettingsService.instance;
     final gate = s.voiceGuidanceEnabled &&
         s.detectionVoiceEnabled &&
-        !s.globalVoiceMuted;
+        !s.globalVoiceMuted &&
+        !s.vibrateMode;
     setState(() => _voiceEnabled = gate);
     _voice.setEnabled(gate);
     if (gate) {
@@ -866,19 +868,17 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
               onTap: _toggleContinuous,
             ),
             const SizedBox(width: 18),
-            _GlassIconButton(
-              icon: SettingsService.instance.globalVoiceMuted
-                  ? Icons.volume_off_rounded
-                  : Icons.volume_up_rounded,
-              semanticLabel: SettingsService.instance.globalVoiceMuted
-                  ? 'Turn voice on'
-                  : 'Turn voice off',
-              onTap: () {
-                SettingsService.instance.setGlobalVoiceMuted(
-                  !SettingsService.instance.globalVoiceMuted,
-                );
-                HapticFeedback.selectionClick();
-              },
+            ListenableBuilder(
+              listenable: SettingsService.instance,
+              builder: (context, _) => _GlassIconButton(
+                icon: SoundModeButton.iconFor(
+                  SettingsService.instance.alertMode,
+                ),
+                semanticLabel: SoundModeButton.labelFor(
+                  SettingsService.instance.alertMode,
+                ),
+                onTap: SoundModeButton.toggle,
+              ),
             ),
             const SizedBox(width: 18),
             _GlassIconButton(

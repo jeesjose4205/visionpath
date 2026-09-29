@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_settings.dart';
+import 'vibration_service.dart';
 
 /// Centralized, persistent application settings for VisionPath AI.
 ///
@@ -19,6 +20,7 @@ class SettingsService extends ChangeNotifier {
 
   static const String _kVoiceGuidance = 'setting.voiceGuidance';
   static const String _kGlobalVoiceMuted = 'setting.globalVoiceMuted';
+  static const String _kAlertMode = 'setting.alertMode';
   static const String _kSpeechRate = 'setting.speechRate';
   static const String _kVoiceVolume = 'setting.voiceVolume';
   static const String _kVoiceLanguage = 'setting.voiceLanguage';
@@ -34,6 +36,11 @@ class SettingsService extends ChangeNotifier {
   static const String _kObstacleSensitivity = 'setting.obstacleSensitivity';
   static const String _kGuidanceMode = 'setting.guidanceMode';
   static const String _kCloseObstacleWarnings = 'setting.closeObstacleWarnings';
+  static const String _kDepthAnalysis = 'setting.depthAnalysis';
+  static const String _kDepthDebugOverlay = 'setting.depthDebugOverlay';
+  static const String _kMetricDistance = 'setting.metricDistance';
+  static const String _kCameraHeight = 'setting.cameraHeight';
+  static const String _kCameraPitch = 'setting.cameraPitch';
   static const String _kDetectionVoice = 'setting.detectionVoice';
   static const String _kPeopleAnns = 'setting.peopleAnns';
   static const String _kVehicleAnns = 'setting.vehicleAnns';
@@ -66,6 +73,7 @@ class SettingsService extends ChangeNotifier {
 
   bool _voiceGuidanceEnabled = true;
   bool _globalVoiceMuted = false;
+  AlertMode _alertMode = AlertMode.sound;
   bool _repeatInstruction = true;
   double _voiceVolume = 1.0;
   int _announcementCooldownSeconds = 3;
@@ -74,6 +82,21 @@ class SettingsService extends ChangeNotifier {
 
   bool get voiceGuidanceEnabled => _voiceGuidanceEnabled;
   bool get globalVoiceMuted => _globalVoiceMuted;
+
+  /// Top-bar alert switch: voice or muted.
+  AlertMode get alertMode => _alertMode;
+
+  /// True when the top-bar switch is in vibration mode.
+  ///
+  /// The VIBRATE state was removed from the product, so this always reports
+  /// false and the legacy `!vibrateMode` voice gates simply degrade to the
+  /// speaker/mute behavior.
+  bool get vibrateMode => false;
+
+  /// True when voice alerts are allowed and the switch is not muted.
+  bool get soundAlertsEnabled =>
+      _alertMode == AlertMode.sound && !_globalVoiceMuted;
+
   bool get repeatInstruction => _repeatInstruction;
   double get voiceVolume => _voiceVolume;
   int get announcementCooldownSeconds => _announcementCooldownSeconds;
@@ -128,11 +151,28 @@ class SettingsService extends ChangeNotifier {
   ObstacleSensitivity _obstacleSensitivity = ObstacleSensitivity.medium;
   GuidanceMode _guidanceMode = GuidanceMode.balanced;
   bool _closeObstacleWarnings = true;
+  bool _depthAnalysisEnabled = true;
+  bool _depthDebugOverlay = false;
+  bool _metricDistanceEnabled = true;
+  double _cameraHeightMeters = 1.5;
+  double _cameraPitchDegrees = 20;
 
   bool get navigationVoiceEnabled => _navigationVoiceEnabled;
   ObstacleSensitivity get obstacleSensitivity => _obstacleSensitivity;
   GuidanceMode get guidanceMode => _guidanceMode;
   bool get closeObstacleWarnings => _closeObstacleWarnings;
+  bool get depthAnalysisEnabled => _depthAnalysisEnabled;
+  bool get depthDebugOverlay => _depthDebugOverlay;
+
+  /// True when the depth stage converts relative depth to calibrated meters
+  /// and attaches them to every detection (drives the on-box distance label).
+  bool get metricDistanceEnabled => _metricDistanceEnabled;
+
+  /// Phone height above the ground used by the metric calibration (meters).
+  double get cameraHeightMeters => _cameraHeightMeters;
+
+  /// Phone downward tilt used by the metric calibration (degrees).
+  double get cameraPitchDegrees => _cameraPitchDegrees;
 
   // ---------------------------------------------------------------
   // Detection
@@ -228,6 +268,22 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     _voiceGuidanceEnabled = prefs.getBool(_kVoiceGuidance) ?? true;
     _globalVoiceMuted = prefs.getBool(_kGlobalVoiceMuted) ?? false;
+    final int? alertIndex = prefs.getInt(_kAlertMode);
+    if (alertIndex == 1 && !_globalVoiceMuted) {
+      // Legacy persisted index 1 was the removed VIBRATE state (which kept
+      // globalVoiceMuted false). Land those users back on speaker instead of
+      // silently muting them.
+      _alertMode = AlertMode.sound;
+    } else if (alertIndex != null &&
+        alertIndex >= 0 &&
+        alertIndex < AlertMode.values.length) {
+      _alertMode = AlertMode.values[alertIndex];
+    } else if (_globalVoiceMuted) {
+      // Migrate the legacy quick-mute switch into the two-state ringer.
+      _alertMode = AlertMode.muted;
+    } else {
+      _alertMode = AlertMode.sound;
+    }
     _repeatInstruction = prefs.getBool(_kRepeatInstruction) ?? true;
     _voiceVolume = prefs.getDouble(_kVoiceVolume) ?? 1.0;
     _announcementCooldownSeconds = prefs.getInt(_kAnnouncementCooldown) ?? 3;
@@ -251,6 +307,13 @@ class SettingsService extends ChangeNotifier {
         _enumFromName(GuidanceMode.values, prefs.getString(_kGuidanceMode)) ??
             GuidanceMode.balanced;
     _closeObstacleWarnings = prefs.getBool(_kCloseObstacleWarnings) ?? true;
+    _depthAnalysisEnabled = prefs.getBool(_kDepthAnalysis) ?? true;
+    _depthDebugOverlay = prefs.getBool(_kDepthDebugOverlay) ?? false;
+    _metricDistanceEnabled = prefs.getBool(_kMetricDistance) ?? true;
+    _cameraHeightMeters =
+        (prefs.getDouble(_kCameraHeight) ?? 1.5).clamp(1.0, 2.0);
+    _cameraPitchDegrees =
+        (prefs.getDouble(_kCameraPitch) ?? 20).clamp(5.0, 45.0);
     _detectionVoiceEnabled = prefs.getBool(_kDetectionVoice) ?? true;
     _peopleAnnouncements = prefs.getBool(_kPeopleAnns) ?? true;
     _vehicleAnnouncements = prefs.getBool(_kVehicleAnns) ?? true;
@@ -290,8 +353,32 @@ class SettingsService extends ChangeNotifier {
   Future<void> setVoiceGuidanceEnabled(bool v) =>
       _write(_kVoiceGuidance, () => _voiceGuidanceEnabled = v, prefsBool: v);
 
-  Future<void> setGlobalVoiceMuted(bool v) =>
-      _write(_kGlobalVoiceMuted, () => _globalVoiceMuted = v, prefsBool: v);
+  Future<void> setGlobalVoiceMuted(bool v) {
+    VibrationService.instance.stopVibration();
+    if (v) _alertMode = AlertMode.muted;
+    if (!v && _alertMode == AlertMode.muted) _alertMode = AlertMode.sound;
+    return _write(
+      _kGlobalVoiceMuted,
+      () => _globalVoiceMuted = v,
+      prefsBool: v,
+    );
+  }
+
+  /// Persist the top-bar feedback switch. Muted mode also mirrors the legacy
+  /// [globalVoiceMuted] flag so every existing `!globalVoiceMuted` voice gate
+  /// stays correct (and so mute survives a restart).
+  Future<void> setAlertMode(AlertMode v) async {
+    // A mode change cancels any pending haptics so a pattern from the old
+    // mode can never keep buzzing after the user switches.
+    VibrationService.instance.stopVibration();
+    final bool muted = v == AlertMode.muted;
+    _alertMode = v;
+    _globalVoiceMuted = muted;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kAlertMode, v.index);
+    await prefs.setBool(_kGlobalVoiceMuted, muted);
+  }
 
   Future<void> setRepeatInstruction(bool v) =>
       _write(_kRepeatInstruction, () => _repeatInstruction = v, prefsBool: v);
@@ -343,6 +430,27 @@ class SettingsService extends ChangeNotifier {
 
   Future<void> setCloseObstacleWarnings(bool v) =>
       _write(_kCloseObstacleWarnings, () => _closeObstacleWarnings = v, prefsBool: v);
+
+  Future<void> setDepthAnalysisEnabled(bool v) =>
+      _write(_kDepthAnalysis, () => _depthAnalysisEnabled = v, prefsBool: v);
+
+  Future<void> setDepthDebugOverlay(bool v) =>
+      _write(_kDepthDebugOverlay, () => _depthDebugOverlay = v, prefsBool: v);
+
+  Future<void> setMetricDistanceEnabled(bool v) =>
+      _write(_kMetricDistance, () => _metricDistanceEnabled = v, prefsBool: v);
+
+  Future<void> setCameraHeightMeters(double v) => _write(
+        _kCameraHeight,
+        () => _cameraHeightMeters = v.clamp(1.0, 2.0),
+        prefsDouble: v.clamp(1.0, 2.0),
+      );
+
+  Future<void> setCameraPitchDegrees(double v) => _write(
+        _kCameraPitch,
+        () => _cameraPitchDegrees = v.clamp(5.0, 45.0),
+        prefsDouble: v.clamp(5.0, 45.0),
+      );
 
   Future<void> setDetectionVoiceEnabled(bool v) =>
       _write(_kDetectionVoice, () => _detectionVoiceEnabled = v, prefsBool: v);

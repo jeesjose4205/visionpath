@@ -15,4 +15,7 @@ enum FamiliarFaceSensitivity { conservative, balanced, sensitive }
 
 enum GuidanceMode { balanced, moreFrequent, minimal }
 
+/// Top-bar sound switch: voice alerts, vibration-based alerts, or silent.
+enum AlertMode { sound, muted }
+
 enum AppThemePreference { system, light, dark }
