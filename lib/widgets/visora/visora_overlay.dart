@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../models/visora_state.dart';
+import '../../services/target_navigation_service.dart';
 import '../../services/visora/visora_config.dart';
 import '../../services/visora/visora_session.dart';
 import '../../screens/visora_settings_screen.dart';
@@ -53,6 +54,14 @@ class VisoraOverlay extends StatefulWidget {
 class _VisoraOverlayState extends State<VisoraOverlay>
     with TickerProviderStateMixin {
   final VisoraSession _session = VisoraSession.instance;
+
+  /// Target Object Navigation: when a spoken "find a chair" starts a search,
+  /// the assistant gets out of the way so the user sees the camera preview and
+  /// the target status while the Navigation screen guides them by voice.
+  final TargetNavigationService _target = TargetNavigationService.instance;
+  int _targetSessionAtOpen = 0;
+  bool _closingForTarget = false;
+
   Timer? _greetingTimer;
 
   /// Typing animation: characters revealed one at a time.
@@ -73,6 +82,8 @@ class _VisoraOverlayState extends State<VisoraOverlay>
   void initState() {
     super.initState();
     _session.open();
+    _targetSessionAtOpen = _target.sessionId;
+    _target.addListener(_onTargetChanged);
     _typeController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 620),
@@ -137,6 +148,7 @@ class _VisoraOverlayState extends State<VisoraOverlay>
   @override
   void dispose() {
     _greetingTimer?.cancel();
+    _target.removeListener(_onTargetChanged);
     _typeController.dispose();
     _cursorController.dispose();
     _glowController.dispose();
@@ -353,6 +365,18 @@ class _VisoraOverlayState extends State<VisoraOverlay>
 
   void _close() {
     Navigator.of(context).pop();
+  }
+
+  /// Close the overlay once, after a target search has actually started.
+  void _onTargetChanged() {
+    if (_closingForTarget || !_target.isActive) return;
+    if (_target.sessionId == _targetSessionAtOpen) return;
+    _closingForTarget = true;
+    // Never pop in the middle of a build/notify pass.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _close();
+    });
   }
 }
 

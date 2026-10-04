@@ -864,6 +864,41 @@ void main() {
     }
   });
 
+  test('a close object still gets a distance when its box has no depth cells',
+      () async {
+    // A depth map full of NaN is what the pipeline effectively sees for a very
+    // close, thin box: the inner sampling region holds no usable cell, so the
+    // box-area fallback is used. That estimate must still be calibrated into
+    // meters instead of being dropped (which used to leave close objects with
+    // no distance at all).
+    final DepthAnalysisService service = DepthAnalysisService();
+    await service.initialize(
+      engine: _StubEngine(
+        resultMap: (f, boxes) => DepthMap(
+          cols: 24,
+          rows: 32,
+          cells: List<double>.filled(24 * 32, double.nan),
+        ),
+      ),
+    );
+    // Big box = big footprint = very close.
+    final List<DetectedObject> detections = [
+      _object('bottle', const Rect.fromLTRB(0.30, 0.10, 0.70, 0.95)),
+    ];
+    final DepthScene scene = await service.analyzeScene(_frame(), detections);
+
+    final DetectedObject bottle = scene.enrichedObjects
+        .firstWhere((DetectedObject o) => o.className == 'bottle');
+    expect(bottle.distanceMeters, isNotNull);
+    expect(bottle.distanceMeters, greaterThan(0));
+    // Still a bounded, plausible estimate: never a fabricated huge number.
+    expect(bottle.distanceMeters,
+        lessThanOrEqualTo(DepthMetricCalibration.maxDistanceMeters));
+    // Marked as low trust, because it came from the coarse fallback.
+    expect(bottle.distanceConfidence, isNotNull);
+    expect(bottle.distanceConfidence!, lessThan(0.5));
+  });
+
   test('objects at different horizontal positions keep independent meters',
       () async {
     final DepthAnalysisService service = DepthAnalysisService();
@@ -1008,7 +1043,7 @@ void main() {
       [chair],
     );
     expect(nav.lastDecision, NavigationDecision.right);
-    expect(nav.lastSpokenMessage, 'Chair ahead, 2.4 m. Move slightly right.');
+    expect(nav.lastSpokenMessage, 'Chair detected, 2.4 meters to your left.');
   });
 
   test('navigation voice without distance keeps the existing message', () {
@@ -1025,7 +1060,7 @@ void main() {
       [chair],
     );
     expect(nav.lastDecision, NavigationDecision.right);
-    expect(nav.lastSpokenMessage, 'Chair ahead. Move slightly right.');
+    expect(nav.lastSpokenMessage, 'Chair detected to your left.');
   });
 
   test('STOP message names the primary blocker when known', () {

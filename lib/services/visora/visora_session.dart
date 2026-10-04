@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../../models/visora_message.dart';
 import '../../models/visora_state.dart';
 import '../speech_service.dart';
+import '../target_navigation_service.dart';
 import '../voice_service.dart';
 import '../web_speech_engine.dart';
 import 'visora_config.dart';
@@ -53,6 +54,20 @@ class VisoraSession extends ChangeNotifier {
   /// The recognizer active right now.
   Object? _activeInput;
 
+  /// Whether the microphone reopens by itself after every utterance. Navigation
+  /// turns this on so "find a chair" works without touching anything.
+  bool _alwaysOn = false;
+
+  /// Bumped whenever always-on listening is (re)started or stopped, so a pump
+  /// loop left over from a previous run can never reopen the microphone.
+  int _alwaysOnGeneration = 0;
+
+  /// While capturing, recognized words are collected instead of being routed
+  /// to the assistant. This is what a press-and-hold needs: the user is still
+  /// holding the screen, so the transcript must not be answered yet.
+  bool _capturing = false;
+  String _capturedText = '';
+
   bool _disposed = false;
   int _generation = 0;
 
@@ -76,6 +91,9 @@ class VisoraSession extends ChangeNotifier {
   /// widget tree (hidden WebView) and started once, or its [initialize]
   /// cannot report ready.
   WebSpeechEngine get webEngine => _web;
+
+  /// Whether the microphone is currently reopening itself after each utterance.
+  bool get alwaysOnListening => _alwaysOn;
 
   /// Reset to a fresh session when the assistant is opened.
   void open() {
@@ -179,6 +197,13 @@ class VisoraSession extends ChangeNotifier {
 
     void onResult(String text) {
       if (wakeMode) return;
+      if (_capturing) {
+        // Collect the words; the owner decides what to do when the user lets
+        // go of the screen.
+        _capturedText = text;
+        notifyListeners();
+        return;
+      }
       unawaited(_onUserSpeech(text));
     }
 
@@ -230,6 +255,123 @@ class VisoraSession extends ChangeNotifier {
     }
   }
 
+// ------------------------------------------------------------------
+// PRESS-AND-HOLD CAPTURE
+// ------------------------------------------------------------------
+
+/// Whether the microphone is collecting words for the owner instead of
+/// answering them.
+bool get isCapturing => _capturing;
+
+/// Words recognized during the current capture.
+String get capturedText => _capturedText;
+
+/// Open the microphone and collect what the user says without acting on it.
+///
+/// Uses the same recognizer as everything else in the app, so there is still
+/// exactly one speech-recognition session. Returns whether listening actually
+/// started; false means the caller should report the failure.
+Future<bool> startCapture() async {
+  if (_disposed || _capturing) return _capturing;
+  _capturing = true;
+  _capturedText = '';
+  notifyListeners();
+  await startListening();
+  // A failed start leaves the session in the error state; do not pretend to be
+  // listening, and let the owner speak the right message.
+  if (_state == VisoraState.error) {
+    _capturing = false;
+    notifyListeners();
+    return false;
+  }
+  return true;
+}
+
+/// Close the microphone and return the collected words.
+Future<String> stopCapture() async {
+  final String text = _capturedText;
+  _capturing = false;
+  _capturedText = '';
+  if (_alwaysOn) {
+    // Press-and-hold owns the microphone now; a background listener must not
+    // grab it back the moment the finger lifts.
+    _alwaysOn = false;
+    _alwaysOnGeneration++;
+  }
+  await _stopInputs();
+  if (_state == VisoraState.listening) _setState(VisoraState.idle);
+  notifyListeners();
+  return text;
+}
+
+// ------------------------------------------------------------------
+// ALWAYS-ON LISTENING
+// ------------------------------------------------------------------
+  //
+  // While Navigation is running the microphone reopens by itself after every
+  // utterance, so a target can be asked for out loud without pressing anything.
+  // The recognizer deliberately stays shut while the app is speaking: a live
+  // mic would otherwise transcribe the app's own guidance.
+
+  /// Polling interval used while waiting for speech to finish.
+  static const Duration _alwaysOnPoll = Duration(milliseconds: 120);
+
+  /// Pause after an utterance before reopening the microphone, so the tail of
+  /// the previous phrase is not captured as a new one.
+  static const Duration _alwaysOnGap = Duration(milliseconds: 300);
+
+  /// Open the microphone and keep it open. Safe to call when already on.
+  void startAlwaysOnListening() {
+    if (_disposed || _alwaysOn) return;
+    _alwaysOn = true;
+    unawaited(_pumpAlwaysOn());
+    print('ALWAYSON_START');
+  }
+
+  /// Close the microphone and stop reopening it.
+  Future<void> stopAlwaysOnListening() async {
+    if (!_alwaysOn) return;
+    _alwaysOn = false;
+    _alwaysOnGeneration++;
+    await _stopInputs();
+    print('ALWAYSON_STOP');
+  }
+
+  Future<void> _pumpAlwaysOn() async {
+    final int gen = ++_alwaysOnGeneration;
+    while (_alwaysOn && gen == _alwaysOnGeneration && !_disposed) {
+      // Never listen on top of the app's own voice.
+      if (_voice.isSpeaking) {
+        await Future<void>.delayed(_alwaysOnPoll);
+        continue;
+      }
+      // Yield to button-driven listening and to an in-flight assistant answer.
+      if (_activeInput != null || _state != VisoraState.idle) {
+        await Future<void>.delayed(_alwaysOnPoll);
+        continue;
+      }
+
+      await startListening();
+
+      // A failed start (no permission, engine error) would otherwise spin this
+      // loop forever, so the first hard error ends always-on listening.
+      if (_state == VisoraState.error) {
+        _alwaysOn = false;
+        print('ALWAYSON_ABORT: ${_lastError}');
+        return;
+      }
+
+      while (_alwaysOn &&
+          gen == _alwaysOnGeneration &&
+          _state == VisoraState.listening) {
+        await Future<void>.delayed(_alwaysOnPoll);
+      }
+
+      if (!_alwaysOn || gen != _alwaysOnGeneration || _disposed) return;
+      await Future<void>.delayed(_alwaysOnGap);
+    }
+  }
+
   // ------------------------------------------------------------------
   // TYPED TEXT INPUT (suggestions, retries, camera questions)
   // ------------------------------------------------------------------
@@ -243,13 +385,27 @@ class VisoraSession extends ChangeNotifier {
     _voiceEnergy = 0.0;
     _partialText = '';
 
-    // Interruption words.
+    // "Stop." / "Cancel." end an active target search first. Only when nothing is
+    // being tracked do they act as the assistant's ordinary barge-in word, so
+    // they never start a target search by themselves.
     final lower = query.toLowerCase();
-    if (lower == 'stop' ||
-        lower == 'cancel' ||
-        lower.contains('shut up') ||
-        lower == 'nevermind') {
+    final bool targetActive = TargetNavigationService.instance.isActive;
+    if (!targetActive &&
+        (lower == 'stop' ||
+            lower == 'cancel' ||
+            lower.contains('shut up') ||
+            lower == 'nevermind')) {
       _voice.stop();
+      _setState(VisoraState.idle);
+      return;
+    }
+
+    // Target Object Navigation ("find a chair", "stop searching") is a device
+    // command, not a question for the model: it drives the live camera
+    // pipeline, so it is handled here — before the message is sent to the LLM
+    // — and the Navigation screen speaks the answer.
+    if (TargetNavigationService.instance.handleCommand(query)) {
+      _lastResponse = '';
       _setState(VisoraState.idle);
       return;
     }
@@ -473,6 +629,8 @@ class VisoraSession extends ChangeNotifier {
 
   Future<void> disposeSession() async {
     _disposed = true;
+    _alwaysOn = false;
+    _alwaysOnGeneration++;
     _generation++;
     _requestSeq++;
     final active = _activeRequest;

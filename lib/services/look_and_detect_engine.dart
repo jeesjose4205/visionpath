@@ -4,6 +4,7 @@ import '../models/look_and_detect.dart';
 import '../models/object_position.dart';
 import '../models/proximity_level.dart';
 import 'settings_service.dart';
+import 'object_vocabulary.dart';
 
 /// Per-class track used for change detection across frames.
 class _Track {
@@ -694,7 +695,7 @@ class LookAndDetectEngine extends ChangeNotifier {
     }
 
     // Find / is-there / where-is object queries.
-    final targets = _extractClasses(text);
+    final targets = ObjectVocabulary.extractClasses(text);
     if (targets.isNotEmpty) {
       _lastTopicClass = targets.first;
       _lastResponse = _responseForClasses(targets, original);
@@ -851,152 +852,6 @@ class LookAndDetectEngine extends ChangeNotifier {
     final first = display.isEmpty ? '' : display[0].toLowerCase();
     return ('aeiou'.contains(first)) ? 'an' : 'a';
   }
-
-  /// The YOLO class names the app currently understands, used both for
-  /// matching query words and as a safety net against inventing classes.
-  static const List<String> _classes = [
-    'person',
-    'bicycle',
-    'car',
-    'motorcycle',
-    'airplane',
-    'bus',
-    'train',
-    'truck',
-    'boat',
-    'traffic light',
-    'fire hydrant',
-    'stop sign',
-    'parking meter',
-    'bench',
-    'bird',
-    'cat',
-    'dog',
-    'horse',
-    'sheep',
-    'cow',
-    'elephant',
-    'bear',
-    'zebra',
-    'giraffe',
-    'backpack',
-    'umbrella',
-    'handbag',
-    'tie',
-    'suitcase',
-    'frisbee',
-    'sports ball',
-    'kite',
-    'baseball glove',
-    'skateboard',
-    'tennis racket',
-    'bottle',
-    'wine glass',
-    'cup',
-    'fork',
-    'knife',
-    'spoon',
-    'bowl',
-    'banana',
-    'apple',
-    'sandwich',
-    'orange',
-    'broccoli',
-    'carrot',
-    'hot dog',
-    'pizza',
-    'donut',
-    'cake',
-    'chair',
-    'couch',
-    'potted plant',
-    'bed',
-    'dining table',
-    'toilet',
-    'tv',
-    'laptop',
-    'mouse',
-    'remote',
-    'keyboard',
-    'cell phone',
-    'microwave',
-    'oven',
-    'toaster',
-    'sink',
-    'refrigerator',
-    'book',
-    'clock',
-    'vase',
-    'scissors',
-    'teddy bear',
-    'hair drier',
-    'toothbrush',
-  ];
-
-  /// Common words a user might say mapped onto the YOLO class(es) they mean.
-  static const Map<String, List<String>> _aliases = {
-    'table': ['dining table'],
-    'dining table': ['dining table'],
-    'phone': ['cell phone'],
-    'cell phone': ['cell phone'],
-    'mobile': ['cell phone'],
-    'sofa': ['couch'],
-    'couch': ['couch'],
-    'fridge': ['refrigerator'],
-    'refrigerator': ['refrigerator'],
-    'television': ['tv'],
-    'screen': ['tv'],
-    'motorbike': ['motorcycle'],
-    'bike': ['bicycle'],
-    'vehicle': ['car', 'bus', 'truck', 'motorcycle', 'bicycle'],
-    'bag': ['handbag', 'backpack', 'suitcase'],
-    'cup': ['cup', 'wine glass'],
-    'glass': ['wine glass'],
-    'bottle': ['bottle'],
-    'chair': ['chair'],
-    'laptop': ['laptop'],
-    'book': ['book'],
-    'dog': ['dog'],
-    'cat': ['cat'],
-    'person': ['person'],
-    'people': ['person'],
-    'door': <String>[],
-    'stairs': <String>[],
-    'window': <String>[],
-  };
-
-  /// Extracts the YOLO classes the question is asking about (empty when the
-  /// user is not asking about a specific object). Never matches words that
-  /// look like an object but are not in the class list, so the assistant
-  /// cannot claim to find a door that the model cannot see.
-  List<String> _extractClasses(String text) {
-    final classes = <String>{};
-    final words = text
-        .split(RegExp('[^a-z0-9 ]'))
-        .join(' ')
-        .split(RegExp(r'\s+'))
-        .where((w) => w.isNotEmpty)
-        .toList();
-
-    for (final entry in _aliases.entries) {
-      if (text.contains(entry.key) && entry.value.isNotEmpty) {
-        classes.addAll(entry.value);
-      }
-    }
-
-    for (final cls in _classes) {
-      final hits = cls.contains(' ')
-          ? text.contains(cls)
-          : words.any((w) => _singular(w) == cls);
-      if (hits) classes.add(cls);
-    }
-    return classes.toList();
-  }
-
-  static String _singular(String word) =>
-      word.length > 1 && word.endsWith('s')
-          ? word.substring(0, word.length - 1)
-          : word;
 
   static String _displayForUnknownQuery(String cls, String original) {
     final words = original

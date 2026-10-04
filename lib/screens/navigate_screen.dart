@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/detected_object.dart';
@@ -19,19 +20,22 @@ import '../services/navigation_service.dart';
 import '../services/object_detection_service.dart';
 import '../services/path_analysis_service.dart';
 import '../services/position_detection_service.dart';
+import '../services/scene_announcer.dart';
 import '../services/settings_service.dart';
+import '../services/target_navigation_service.dart';
 import '../services/vibration_service.dart';
 import '../services/voice_service.dart';
-import '../services/visora/visora_config.dart';
 import '../services/visora/visora_session.dart';
-import '../services/visora/visora_wake_word.dart';
+import '../services/voice_command_controller.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/depth_debug_overlay.dart';
 import '../widgets/detection_overlay.dart';
 import '../widgets/settings_button.dart';
 import '../widgets/sos_gesture.dart';
 import '../widgets/sound_mode_button.dart';
-import '../widgets/visora/visora_overlay.dart';
+import '../widgets/target_status_chip.dart';
+import '../widgets/press_and_hold_voice_region.dart';
+import '../widgets/voice_search_overlay.dart';
 import 'familiar_faces_screen.dart';
 import 'read_text_screen.dart';
 
@@ -73,11 +77,18 @@ class _NavigateScreenState extends State<NavigateScreen>
   static const _kReverseDuration = Duration(milliseconds: 680);
 
   _NavState _navState = _NavState.idle;
+
+  /// Set while [_stopNavigation] is tearing the run down.
+  ///
+  /// Its teardown is asynchronous (camera stream, depth reset), so BACK can be
+  /// pressed again mid-flight. Without this guard a second press would start a
+  /// second teardown on top of the first.
+  bool _isStopping = false;
+
+  /// Cached so dispose() can release the camera without touching BuildContext.
+  CameraService? _cameraService;
   bool _voiceGuidance = true;
   DateTime _greetingGuardUntil = DateTime.fromMillisecondsSinceEpoch(0);
-
-  // Visora assistant: wake-word detector armed while this screen is live.
-  VisoraWakeWordDetector? _wakeWord;
 
   // ------------------------------------------------------------
   // INTRODUCTORY TITLE CARD
@@ -111,8 +122,25 @@ class _NavigateScreenState extends State<NavigateScreen>
   final InstructionManager _instructionManager = InstructionManager();
   final VoiceService _voiceService = VoiceService();
 
+  // Target Object Navigation ("find a chair"). Fed from the same analysed
+  // frames as the obstacle pipeline; it only decides what to say about the
+  // target and never touches the camera or the model.
+  final TargetNavigationService _targetNavigation = TargetNavigationService.instance;
+
+/// Last target session this screen spoke for; a change means a new command
+/// arrived and the routine queue must yield to it.
+int _lastTargetSessionId = 0;
+
+/// Press-and-hold voice assistant. Owns the hold gesture, the microphone and the
+/// transcript; this screen only routes what was said into the target navigator.
+final VoiceCommandController _voiceCommand = VoiceCommandController();
+
+  /// True while the assistant is acting on the transcript a hold produced.
+  bool _commandInFlight = false;
+
   ObjectDetectionService? _objectDetectionService;
   NavigationService? _navigationService;
+  DepthAnalysisService? _depthAnalysisService;
 
   // Depth analysis (relative, on-device). `_depthStatusText` drives the small
   // DEPTH chip over the preview; `_activeDepthScene` feeds the debug overlay.
@@ -131,6 +159,25 @@ class _NavigateScreenState extends State<NavigateScreen>
   double _swipeDx = 0;
   bool _swipeNavLocked = false;
 
+  /// True while the navigation process owns this screen.
+  ///
+  /// Derived from the existing [_navState] rather than a second flag, so it can
+  /// never disagree with the state the UI is showing. `starting` counts as
+  /// active: the user must not be able to swipe away while the camera and model
+  /// are still being prepared, and neither may they during `stopped`'s async
+  /// teardown.
+  ///
+  /// A target search can only run inside a live pipeline, so it is covered here
+  /// too; the explicit check keeps that guarantee visible.
+  bool get _navigationActive =>
+      !(_navState == _NavState.idle || _navState == _NavState.stopped) ||
+      _targetNavigation.isActive ||
+      _isStopping;
+
+  /// Horizontal paging is only for the carousel. While navigation is running the
+  /// user must stay put, so the swipe is rejected and nothing is pushed.
+  bool get _horizontalSwipeEnabled => !_navigationActive;
+
   void _onSwipeStart(DragStartDetails details) {
     _swipeDx = 0;
   }
@@ -140,6 +187,9 @@ class _NavigateScreenState extends State<NavigateScreen>
   }
 
   void _onSwipeEnd(DragEndDetails details) {
+    // Rejected, not queued: the screen simply does not change and navigation
+    // keeps running untouched.
+    if (!_horizontalSwipeEnabled) return;
     if (_swipeNavLocked || SosGestureOverlay.sosSwipeActive || !mounted) return;
 
     final velocity = details.primaryVelocity ?? 0;
@@ -155,6 +205,9 @@ class _NavigateScreenState extends State<NavigateScreen>
   /// Opens the page on the chosen side with a subtle horizontal slide.
   /// Locked while a page is up so one swipe can never trigger twice.
   Future<void> _pushSide(bool fromRight) async {
+    // Checked again here because this is the only path that actually leaves the
+    // screen, and it can be reached from the drag handlers above.
+    if (!_horizontalSwipeEnabled) return;
     if (_swipeNavLocked || SosGestureOverlay.sosSwipeActive || !mounted) return;
 
     final Widget screen = fromRight
@@ -222,6 +275,10 @@ class _NavigateScreenState extends State<NavigateScreen>
     super.initState();
     _applySettings();
     SettingsService.instance.addListener(_applySettings);
+    _targetNavigation.addListener(_onTargetNavigationChanged);
+    // The controller reports the hold opening and closing, which is exactly when
+    // the object announcements must stop and start again.
+    _voiceCommand.addListener(_syncSceneVoiceSuppression);
     _initializeObjectDetection();
     _initializeDepthAnalysis();
     _introController = AnimationController(
@@ -254,24 +311,11 @@ class _NavigateScreenState extends State<NavigateScreen>
     // must be bound to its loopback server once, or its recognizer never
     // becomes ready inside the assistant overlay.
     unawaited(VisoraSession.instance.webEngine.start());
-    if (!VisoraConfig.instance.wakeWordEnabled) return;
-    _wakeWord = VisoraWakeWordDetector();
-    _wakeWord!.onWake = () => unawaited(_openVisora(autoListen: true));
-    unawaited(_wakeWord!.start());
-  }
-
-  /// Open the Visora assistant as an overlay above this screen.
-  Future<void> _openVisora({bool autoListen = false}) async {
-    if (!mounted) return;
-    // Hands-free activation hands the microphone to the assistant; the wake
-    // word pauses while they talk and resumes when the overlay closes.
-    await _wakeWord?.stop();
-    if (!mounted) return;
-    await VisoraOverlay.show(context, autoListen: autoListen);
-    if (mounted) {
-      final w = _wakeWord;
-      if (w != null) unawaited(w.start());
-    }
+    // No wake-word detector here on purpose. It owns a second
+    // speech-recognition session, and press-and-hold needs the single
+    // recognizer that [VoiceCommandController] borrows from VisoraSession.
+    // A background listener would seize the microphone the instant a hold
+    // ended, and the two engines would compete for the same audio.
   }
 
   /// Applies persisted settings to this screen's live services.
@@ -331,12 +375,105 @@ class _NavigateScreenState extends State<NavigateScreen>
   @override
   void dispose() {
     SettingsService.instance.removeListener(_applySettings);
+    _targetNavigation.removeListener(_onTargetNavigationChanged);
+    _voiceCommand.removeListener(_syncSceneVoiceSuppression);
+    // The screen that owns the voice channel goes away with its target.
+_targetNavigation.setPipelineActive(false);
+_targetNavigation.drainMessages();
+    // The hold gesture must not outlive the screen, and neither may the
+    // microphone it opened.
+_voiceCommand.dispose();
+    // Invalidate in-flight work before releasing anything, so a frame that
+    // returns after the screen is gone cannot speak, vibrate, or revive the
+    // pipeline. The PopScope above normally guarantees the route cannot be
+    // disposed while a run is live; this is the backstop for any other removal.
+    _runGeneration++;
     _inferenceTimer?.cancel();
+    unawaited(_cameraService?.stopImageStream());
+    _objectDetectionService?.stop();
+    _depthAnalysisService?.reset();
     _introController.dispose();
-    _wakeWord?.dispose();
     _instructionManager.reset();
     _voiceService.stop();
     super.dispose();
+  }
+
+  // ------------------------------------------------------------
+  // TARGET OBJECT NAVIGATION
+  // ------------------------------------------------------------
+  //
+  // "Find a chair" arrives through the Visora assistant (speech or typed);
+  // this screen is the only place that owns the voice channel, so it speaks
+  // the target lines and repaints the small status chip over the preview.
+
+  void _onTargetNavigationChanged() {
+    if (!mounted) return;
+    // Starting or ending a target run changes who owns the voice channel, so the
+    // object announcements follow it.
+    _syncSceneVoiceSuppression();
+    // An explicit command outranks whatever the environment had queued, so the
+    // answer to "find a chair" is the first thing heard.
+    final int session = _targetNavigation.sessionId;
+    if (session != _lastTargetSessionId) {
+      _lastTargetSessionId = session;
+      _voiceService.clearSpeechQueue();
+    }
+    // Live guidance obeys the same switches as obstacle guidance; the global
+    // mute is already folded into `_voiceService.enabled`.
+    if (_voiceGuidance && _voiceService.enabled) {
+      for (final String message in _targetNavigation.drainMessages()) {
+        // Queued, never interrupting: a target update waits for the sentence
+        // before it instead of cutting it off. A refusal here means the
+        // sentence is blank or already spoken, and there is deliberately no
+        // fallback to speak() -- that path interrupts whatever is playing and
+        // would reintroduce overlapping speech.
+        _voiceService.enqueueSpeech(message);
+      }
+    } else {
+      _targetNavigation.drainMessages();
+    }
+    setState(() {});
+  }
+
+  // ------------------------------------------------------------
+  // PRESS-AND-HOLD VOICE ASSISTANT
+  // ------------------------------------------------------------
+  //
+  // The microphone belongs to the one session in the app. Press-and-hold is a
+  // deliberate gesture, so nothing runs in the background between holds: the
+  // recognizer is opened on press and closed on release.
+
+  /// True from the moment a hold is recognized until the command it produced has
+  /// been dealt with, and for the whole of a target search.
+  ///
+  /// The microphone owns the floor during a hold, and once a target is being
+  /// tracked its guidance is the only thing the user needs to hear, so the
+  /// generic object sentences stay out of the way until it is reached or
+  /// cancelled.
+  bool get _sceneAnnouncementsSuppressed =>
+      _voiceCommand.isHolding || _commandInFlight || _targetNavigation.isActive;
+
+  /// The one place the detected-object voice is switched off.
+  ///
+  /// Kept as a single method because the rule has to hold no matter what starts
+  /// or stops the hold. Target navigation keeps the generic object sentences
+  /// suppressed for its whole run, which is what keeps its guidance audible.
+  void _syncSceneVoiceSuppression() {
+    // Nullable until the first frame resolves it from Provider.
+    _navigationService?.sceneVoiceMuted = _sceneAnnouncementsSuppressed;
+  }
+
+  void _startAlwaysOnListening() {
+    _voiceCommand
+      ..onCommand = _onVoiceCommand
+      ..onFailure = _onVoiceCommandFailure;
+  }
+
+  void _stopAlwaysOnListening() {
+    _voiceCommand
+      ..onCommand = null
+      ..onFailure = null;
+    unawaited(_voiceCommand.cancel());
   }
 
   // ------------------------------------------------------------
@@ -350,6 +487,14 @@ class _NavigateScreenState extends State<NavigateScreen>
         Provider.of<ObjectDetectionService>(context, listen: false);
     _navigationService =
         Provider.of<NavigationService>(context, listen: false);
+    // Cached rather than looked up during teardown: dispose() must not touch
+    // BuildContext, and stopNavigation() runs after async gaps.
+    _cameraService = Provider.of<CameraService>(context, listen: false);
+    _depthAnalysisService =
+        Provider.of<DepthAnalysisService>(context, listen: false);
+    // A hold cannot have started yet, but the run's initial state still has to
+    // be applied to the freshly resolved service.
+    _syncSceneVoiceSuppression();
 
     if (_objectDetectionService == null || _navigationService == null) {
       print('NAVIGATE_INIT_SERVICES_MISSING');
@@ -425,6 +570,9 @@ class _NavigateScreenState extends State<NavigateScreen>
   Future<void> _startNavigation() async {
     print('NAVIGATE_START_PRESSED');
     if (_navState == _NavState.starting) return;
+    // A previous teardown is still releasing the camera. Starting now would
+    // race it and can leave two image streams behind.
+    if (_isStopping) return;
     _dismissIntroCard();
 
     setState(() => _navState = _NavState.starting);
@@ -466,6 +614,16 @@ class _NavigateScreenState extends State<NavigateScreen>
     _framesObserved = 0;
     _inferenceInProgress = false;
     Provider.of<DepthAnalysisService>(context, listen: false).reset();
+    // A new run starts from a clean scene: no pending announcement and no
+    // object history carried over from the previous run.
+    _navigationService?.reset();
+    // Nothing from a previous run may still be waiting to be spoken.
+    _voiceService.clearSpeechQueue();
+// A target request only makes sense while frames are being analysed.
+_targetNavigation.setPipelineActive(true, runId: _runGeneration);
+    // "Find a chair" has to work out loud, with no button: the microphone
+    // reopens by itself for as long as this run lasts.
+    _startAlwaysOnListening();
 
     setState(() {
       _navState = _NavState.cameraReady;
@@ -605,11 +763,19 @@ class _NavigateScreenState extends State<NavigateScreen>
     ods.setResults(detections);
 
     // Navigation decision.
-    nav.decide(path, detections);
+    nav.decide(path, detections, includeObject: _allowObjectAnnouncement);
     final NavigationDecision decision = nav.lastDecision;
 
     // Instruction Manager: suppress repeated messages.
-    final bool speak = _instructionManager.shouldSpeak(decision);
+    //
+    // Routine guidance is driven by scene change alone: the same unchanged
+    // scene is announced once and then stays silent. Safety decisions keep the
+    // existing cooldown so a hazard is still re-stated periodically.
+    final bool cooldownSpoken = _instructionManager.shouldSpeak(decision);
+    final bool sceneChanged = nav.announcementChanged;
+    final bool urgent = decision == NavigationDecision.stop ||
+        decision == NavigationDecision.slow;
+    final bool speak = urgent ? cooldownSpoken : sceneChanged;
     final bool greetingActive =
         DateTime.now().isBefore(_greetingGuardUntil);
     if (speak &&
@@ -619,9 +785,33 @@ class _NavigateScreenState extends State<NavigateScreen>
       if (SettingsService.instance.vibrateMode) {
         // Ringer in vibrate mode: haptics replace the spoken guidance.
         VibrationService.instance.vibrateNavigation();
+        nav.commitAnnouncement();
       } else if (_voiceGuidance) {
-        _voiceService.speak(nav.lastSpokenMessage);
+        if (urgent) {
+          // A safety warning must not wait behind a queued scene sentence.
+          _voiceService.speak(nav.lastSpokenMessage);
+          nav.commitAnnouncement();
+        } else {
+          // Each object becomes its own queued sentence. The queue plays them
+          // one at a time, so nothing is cut off and an unchanged scene cannot
+          // pile up duplicates.
+          for (final String sentence in nav.pendingSentences) {
+            _voiceService.enqueueSpeech(sentence);
+          }
+          nav.commitAnnouncement();
+        }
       }
+    }
+
+    // Target Object Navigation: the same frame, the same detections and the
+    // same safety decision. The target navigator holds its own guidance back
+    // while an obstacle is being reported, so safety always speaks first.
+    if (!stale()) {
+      _targetNavigation.updateFrame(
+        detections: detections,
+        decision: decision,
+        runId: run,
+      );
     }
 
     if (!mounted || stale()) return;
@@ -659,7 +849,18 @@ class _NavigateScreenState extends State<NavigateScreen>
       return false;
     }
     if (blocker == null) return true;
-    final cls = blocker.className.toLowerCase();
+    return _allowObjectAnnouncement(blocker);
+  }
+
+  /// Whether this single object may be named out loud.
+  ///
+  /// The same per-category switches that already gate the primary blocker are
+  /// applied to every object in a multi-object announcement, so turning
+  /// "person announcements" off really does keep people out of the sentence.
+  bool _allowObjectAnnouncement(DetectedObject object) {
+    final s = SettingsService.instance;
+    final cls = object.className.toLowerCase();
+    if (cls == SceneAnnouncer.ghostClass) return s.obstacleAnnouncements;
     if (cls == 'person') return s.peopleAnnouncements;
     if (_vehicleClasses.contains(cls)) return s.vehicleAnnouncements;
     if (_animalClasses.contains(cls)) return s.animalAnnouncements;
@@ -759,7 +960,23 @@ class _NavigateScreenState extends State<NavigateScreen>
 
   Future<void> _stopNavigation() async {
     print('NAVIGATE_STOP_PRESSED');
+    // Idempotent: STOP and BACK can both arrive while a teardown is running.
+    if (_isStopping) return;
+    _isStopping = true;
 
+    try {
+      await _teardownNavigation();
+    } finally {
+      _isStopping = false;
+      // Both the back lock and the swipe gate are read while building, so
+      // releasing this guard has to rebuild or the screen would stay locked
+      // after the run has already stopped.
+      if (mounted) setState(() {});
+    }
+  }
+
+  /// Release everything the run owns, then return to the stopped screen.
+  Future<void> _teardownNavigation() async {
     // Marks any in-flight inference belonging to the old run as stale BEFORE
     // any await, so it cannot re-enable the pipeline, speak, or overwrite the
     // stopped state once it finally returns.
@@ -767,8 +984,16 @@ class _NavigateScreenState extends State<NavigateScreen>
     _inferenceTimer?.cancel();
 
     _instructionManager.reset();
+    // Cuts the sentence in flight as well as the queue, so no "Chair on your
+    // left..." keeps talking after the run is over.
     _voiceService.stop();
     VibrationService.instance.stopVibration();
+    // Any target session ends with the run, silently: navigation owns the
+    // voice channel again from here. This also ends the search itself, so no
+    // target tracking survives in the background.
+    _targetNavigation.setPipelineActive(false);
+    // Nothing is being analysed any more, so the microphone closes too.
+    _stopAlwaysOnListening();
 
     if (!mounted) return;
 
@@ -780,17 +1005,29 @@ class _NavigateScreenState extends State<NavigateScreen>
       _detectedObject = 'No objects detected';
     });
 
-    final CameraService cameraService =
-        Provider.of<CameraService>(context, listen: false);
-    await cameraService.stopImageStream();
+    await _cameraService?.stopImageStream();
 
     _objectDetectionService?.stop();
     _navigationService?.reset();
-    Provider.of<DepthAnalysisService>(context, listen: false).reset();
+    _depthAnalysisService?.reset();
 
     if (!mounted) return;
 
     _presentIntroCard();
+    _confirmNavigationStopped();
+  }
+
+  /// Tell the user the run is over, using whichever feedback channel is active.
+  ///
+  /// Silence would leave a blind user with no way of knowing the Back press
+  /// landed, so this follows the same switch the live guidance uses.
+  void _confirmNavigationStopped() {
+    if (SettingsService.instance.vibrateMode) {
+      VibrationService.instance.vibrateNavigation();
+      return;
+    }
+    if (!_voiceGuidance || !_voiceService.enabled) return;
+    _voiceService.enqueueSpeech('Navigation stopped.');
   }
 
   // ------------------------------------------------------------
@@ -824,27 +1061,24 @@ class _NavigateScreenState extends State<NavigateScreen>
       onHorizontalDragEnd: _onSwipeEnd,
 
       child: PopScope(
-        // The removed header back arrow used to stop navigation before
-        // leaving; mirror that with the system back gesture so a running
-        // session never leaks its camera stream.
-        canPop: _navState == _NavState.idle || _navState == _NavState.stopped,
+        // Back means "stop the current navigation process", not "leave while it
+        // keeps running". While the run owns the screen the route is held shut,
+        // so the process is always fully stopped before the user can go
+        // anywhere. A second Back, once stopped, behaves as it always did.
+        canPop: !_navigationActive,
         onPopInvokedWithResult: (didPop, result) async {
-          if (didPop) return;
-          if (_navState != _NavState.idle && _navState != _NavState.stopped) {
-            await _stopNavigation();
-          }
-          // This screen is the app's root route: once navigation has been
-          // stopped there is nothing to pop back to, and popping the root
-          // throws. Only pop when a screen actually sits underneath.
-          if (!mounted) return;
-          final navigator = Navigator.of(context);
-          if (navigator.canPop()) navigator.pop();
+          if (didPop || !mounted) return;
+          // Reaching here means canPop was false, i.e. navigation was active.
+          // Stop it and stay on this screen in its normal stopped state; the
+          // swipe lock is released by _navigationActive once _navState settles.
+          await _stopNavigation();
         },
 
         child: Scaffold(
         backgroundColor: const Color(0xFFF8FAFD),
-        body: SafeArea(
-          child: Column(
+        body: _buildVoiceActivationArea(
+          SafeArea(
+            child: Column(
             children: [
               _buildHeader(compact),
 
@@ -868,6 +1102,15 @@ class _NavigateScreenState extends State<NavigateScreen>
                               _buildCameraPreview(),
                               if (_showIntroCard)
                                 _IntroTitleCard(animation: _introController),
+                              if (_targetNavigation.isActive)
+                                Positioned(
+                                  top: 0,
+                                  left: 0,
+                                  right: 0,
+                                  child: TargetStatusChip(
+                                    state: _targetNavigation.state,
+                                  ),
+                                ),
                             ],
                           ),
                         ),
@@ -894,7 +1137,66 @@ class _NavigateScreenState extends State<NavigateScreen>
           ),
         ),
       ),
+    ),
+  );
+  }
+
+  // ------------------------------------------------------------
+  // PRESS-AND-HOLD VOICE ACTIVATION
+  // ------------------------------------------------------------
+  //
+  // The entire navigation surface is the activation target, so a user never has
+  // to find a button. [PressAndHoldVoiceRegion] owns the gesture itself,
+  // including the threshold that keeps a short tap from opening the assistant.
+
+  Widget _buildVoiceActivationArea(Widget navigation) {
+    return PressAndHoldVoiceRegion(
+      controller: _voiceCommand,
+      enabled: _voiceActivationEnabled,
+      child: Stack(
+        children: <Widget>[
+          navigation,
+          // Above everything, transparent, purely decorative.
+          Positioned.fill(
+            child: VoiceSearchOverlay(controller: _voiceCommand),
+          ),
+        ],
+      ),
     );
+  }
+
+  /// Press-and-hold only makes sense with a running camera behind it, so the
+  /// assistant stays out of the way on the idle and stopped screens.
+  bool get _voiceActivationEnabled =>
+      _navState != _NavState.idle && _navState != _NavState.stopped;
+
+  /// Route the recognized transcript. Target commands drive the target
+  /// navigator; anything else is left to the existing assistant behaviour.
+  ///
+  /// The object announcements stay muted for as long as this takes, so the
+  /// answer to the command is never buried under "Person detected." The target
+  /// navigator takes over the mute on its own once a search starts.
+  Future<void> _onVoiceCommand(String transcript) async {
+    _commandInFlight = true;
+    _syncSceneVoiceSuppression();
+    try {
+      if (_targetNavigation.handleCommand(transcript)) return;
+      // Not a device command: hand it to the assistant exactly as the old
+      // microphone button did, so nothing that used to work is lost.
+      await VisoraSession.instance.handleUserMessage(transcript);
+    } finally {
+      _commandInFlight = false;
+      _syncSceneVoiceSuppression();
+    }
+  }
+
+  /// Speak the reason the hold produced nothing usable.
+  void _onVoiceCommandFailure(VoiceCommandFailure failure) {
+    final String message =
+        VoiceCommandController.isPermissionProblem(failure)
+            ? VoiceCommandController.permissionDeniedMessage
+            : VoiceCommandController.nothingHeardMessage;
+    _voiceService.enqueueSpeech(message);
   }
 
   /// Visora's hidden Google speech WebView: 1x1, no paint, no input. It must
@@ -961,12 +1263,8 @@ class _NavigateScreenState extends State<NavigateScreen>
 
           const SizedBox(width: 12),
 
-          // Visora AI assistant
-          _HeaderButton(
-            icon: Icons.auto_awesome_rounded,
-            label: 'Visora AI assistant',
-            onTap: () => unawaited(_openVisora()),
-          ),
+          // The voice assistant is no longer a button: the whole screen is the
+          // press-and-hold target, so a user never has to find a small icon.
 
           const SizedBox(width: 10),
 
@@ -1381,51 +1679,6 @@ class _NavigateScreenState extends State<NavigateScreen>
           ),
         ),
       ],
-    );
-  }
-}
-
-// ============================================================
-// HEADER BUTTON
-// ============================================================
-
-class _HeaderButton extends StatelessWidget {
-  final IconData icon;
-  final VoidCallback onTap;
-  final String? label;
-
-  const _HeaderButton({
-    required this.icon,
-    required this.onTap,
-    this.label,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: label,
-      child: Material(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(13),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(13),
-          child: Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(13),
-              border: Border.all(color: const Color(0xFFE4E7EC)),
-            ),
-            child: Icon(
-              icon,
-              color: const Color(0xFF344054),
-              size: 21,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

@@ -42,6 +42,14 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   final EmergencyContactService _contactService = EmergencyContactService();
   final VoiceService _voice = VoiceService();
 
+  /// The one SOS press-and-hold state machine.
+  ///
+  /// The whole screen forwards its raw pointer stream here, so holding the SOS
+  /// button, holding the middle of the screen and holding an empty corner all
+  /// run the exact same countdown and trigger the exact same activation. The
+  /// button renders this controller; it does not own a second copy of it.
+  late final SosHoldController _hold;
+
   bool _voiceEnabled = true;
   _SosStatus _status = _SosStatus.ready;
   int _holdSeconds = 5;
@@ -50,6 +58,12 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   @override
   void initState() {
     super.initState();
+    _hold = SosHoldController(
+      onActivated: _onActivated,
+      onTick: _onTick,
+      onCancelled: _onCancelled,
+      onReset: _onReset,
+    );
     _applySettings();
     SettingsService.instance.addListener(_applySettings);
     _voice.setEnabled(_voiceEnabled);
@@ -95,6 +109,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   void dispose() {
     SettingsService.instance.removeListener(_applySettings);
     _contactService.removeListener(_onContactsChanged);
+    _hold.dispose();
     _voice.setEnabled(false);
     unawaited(_voice.dispose());
     super.dispose();
@@ -413,49 +428,63 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
       // Swallowing the SOS screen's own horizontal drags guarantees no other
       // screen can ever open by swiping from here; leave it with the back
       // button and the system back gesture, which pop to the previous screen.
-      body: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onHorizontalDragStart: (_) {},
-        onHorizontalDragUpdate: (_) {},
-        onHorizontalDragEnd: (_) {},
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final height = constraints.maxHeight;
-                final contacts = _contactService.contacts;
-                final n = contacts.length;
+      //
+      // The Listener is what makes the hold work ANYWHERE on this screen. A raw
+      // Listener observes without consuming, so every control underneath (back,
+      // sound mode, contact cards, Call, add contact, reset) still receives its
+      // normal taps: a quick press starts and abandons the hold in well under a
+      // second without announcing anything, and only a genuine sustained press
+      // runs the SOS countdown.
+      body: Listener(
+        behavior: HitTestBehavior.opaque,
+        onPointerDown: _hold.pointerDown,
+        onPointerMove: _hold.pointerMove,
+        onPointerUp: _hold.pointerUp,
+        onPointerCancel: _hold.pointerCancel,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragStart: (_) {},
+          onHorizontalDragUpdate: (_) {},
+          onHorizontalDragEnd: (_) {},
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final height = constraints.maxHeight;
+                  final contacts = _contactService.contacts;
+                  final n = contacts.length;
 
-                var cardH = 48.0;
-                if (n > 0) {
-                  while (true) {
-                    final budget =
-                        height - 60 - 66 - _contactsHeight(cardH, n);
-                    if (budget >= 130 || cardH <= 32) break;
-                    cardH -= 2;
+                  var cardH = 48.0;
+                  if (n > 0) {
+                    while (true) {
+                      final budget =
+                          height - 60 - 66 - _contactsHeight(cardH, n);
+                      if (budget >= 130 || cardH <= 32) break;
+                      cardH -= 2;
+                    }
                   }
-                }
-                final contactsBlock = _contactsHeight(cardH, n);
-                var sosH = height - 60 - 66 - contactsBlock;
-                if (sosH > 360) sosH = 360;
+                  final contactsBlock = _contactsHeight(cardH, n);
+                  var sosH = height - 60 - 66 - contactsBlock;
+                  if (sosH > 360) sosH = 360;
 
-                return Column(
-                  children: [
-                    SizedBox(height: 56, child: _buildHeader()),
-                    const SizedBox(height: 4),
-                    SizedBox(
-                      height: sosH < 0 ? 0 : sosH,
-                      child: _buildSosPanel(),
-                    ),
-                    const Spacer(),
-                    _buildContactsCard(cardH),
-                    const SizedBox(height: 10),
-                    const EmergencyLocationCard(),
-                    const SizedBox(height: 10),
-                  ],
-                );
-              },
+                  return Column(
+                    children: [
+                      SizedBox(height: 56, child: _buildHeader()),
+                      const SizedBox(height: 4),
+                      SizedBox(
+                        height: sosH < 0 ? 0 : sosH,
+                        child: _buildSosPanel(),
+                      ),
+                      const Spacer(),
+                      _buildContactsCard(cardH),
+                      const SizedBox(height: 10),
+                      const EmergencyLocationCard(),
+                      const SizedBox(height: 10),
+                    ],
+                  );
+                },
+              ),
             ),
           ),
         ),
@@ -595,12 +624,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
             child: Center(
               child: FittedBox(
                 fit: BoxFit.scaleDown,
-                child: EmergencySOSButton(
-                  onActivated: _onActivated,
-                  onTick: _onTick,
-                  onCancelled: _onCancelled,
-                  onReset: _onReset,
-                ),
+                child: EmergencySOSButton(controller: _hold),
               ),
             ),
           ),

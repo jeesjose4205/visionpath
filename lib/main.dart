@@ -79,7 +79,8 @@ class _AppRootState extends State<_AppRoot> {
       navigatorKey: _navigatorKey,
       navigatorObservers: [_sosObserver],
       // Global gesture layer above every routed screen: a deliberate
-      // bottom-to-top swipe opens the existing emergency SOS screen.
+      // three-finger swipe from the top of the screen downwards opens the
+      // existing emergency SOS screen.
       builder: (context, child) => SosGestureOverlay(
         navigatorKey: _navigatorKey,
         observer: _sosObserver,

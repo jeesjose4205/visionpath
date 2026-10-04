@@ -226,11 +226,7 @@ class DepthAnalysisService {
         _objectKey(obj),
         rawResult.proximity,
       );
-      final double? meters = _smoothDistance(
-        _objectKey(obj),
-        // Never convert heuristic/box-area results into meters.
-        rawResult.fromFallback ? null : _metersFor(rawResult.relativeDepth),
-      );
+      final double? meters = _smoothDistance(_objectKey(obj), _metersFrom(obj, rawResult));
       final DepthResult result = DepthResult(
         relativeDepth: rawResult.relativeDepth,
         normalizedDepth: rawResult.normalizedDepth,
@@ -566,6 +562,25 @@ class DepthAnalysisService {
   // ------------------------------------------------------------------
   // Metric distance (calibrated meters)
   // ------------------------------------------------------------------
+
+  /// Calibrated meters for one detection, or null when a distance cannot be
+  /// produced honestly.
+  ///
+  /// The box-area fallback ([DepthResult.fromFallback]) is a coarse but REAL
+  /// estimate: it is used when a box is too small to sample, or when its inner
+  /// region holds no usable depth cell — exactly the situation for a small,
+  /// very close object. It used to be discarded outright, which is why close
+  /// objects sometimes showed no distance at all. It is now kept (still
+  /// low-confidence, so the UI can present it as an estimate).
+  ///
+  /// A box with no footprint at all (zero width or height) still gets nothing:
+  /// there is no evidence to convert, and inventing one would be a fabrication.
+  double? _metersFrom(DetectedObject obj, DepthResult result) {
+    if (result.fromFallback && !_hasFootprint(obj.boundingBox)) return null;
+    return _metersFor(result.relativeDepth);
+  }
+
+  bool _hasFootprint(Rect box) => box.width > 0 && box.height > 0;
 
   /// Convert a relative-depth value to calibrated meters using the enabled
   /// metric calibration. Returns null when metric distance is disabled in
