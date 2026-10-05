@@ -59,6 +59,8 @@ class SettingsService extends ChangeNotifier {
   static const String _kFaceCooldown = 'setting.faceCooldown';
   static const String _kSosHoldDuration = 'setting.sosHoldDuration';
   static const String _kSosConfirmation = 'setting.sosConfirmation';
+  static const String _kSosAlertSoundEnabled = 'setting.sosAlertSoundEnabled';
+  static const String _kSosAlertTone = 'setting.sosAlertTone';
   static const String _kAppLanguage = 'setting.appLanguage';
   static const String _kTheme = 'setting.theme';
   static const String _kNotifications = 'setting.notifications';
@@ -243,9 +245,20 @@ class SettingsService extends ChangeNotifier {
 
   int _sosHoldDurationSeconds = 5;
   bool _sosConfirmation = true;
+  bool _sosAlertSoundEnabled = true;
+  SosAlertTone _sosAlertTone = SosAlertTone.emergency;
 
   int get sosHoldDurationSeconds => _sosHoldDurationSeconds;
   bool get sosConfirmation => _sosConfirmation;
+
+  /// Whether SOS repeats an audible alert while it is active.
+  ///
+  /// Independent of the emergency call, the SMS and GPS on purpose: turning the
+  /// sound off silences the beep and nothing else.
+  bool get sosAlertSoundEnabled => _sosAlertSoundEnabled;
+
+  /// Which alert tone repeats while SOS is active.
+  SosAlertTone get sosAlertTone => _sosAlertTone;
 
   // ---------------------------------------------------------------
   // General
@@ -338,6 +351,8 @@ class SettingsService extends ChangeNotifier {
     _familiarFaceCooldownSeconds = prefs.getInt(_kFaceCooldown) ?? 3;
     _sosHoldDurationSeconds = prefs.getInt(_kSosHoldDuration) ?? 5;
     _sosConfirmation = prefs.getBool(_kSosConfirmation) ?? true;
+    _sosAlertSoundEnabled = prefs.getBool(_kSosAlertSoundEnabled) ?? true;
+    _sosAlertTone = SosAlertTone.fromName(prefs.getString(_kSosAlertTone));
     _appLanguage = prefs.getString(_kAppLanguage) ?? 'en';
     _theme = _enumFromName(AppThemePreference.values, prefs.getString(_kTheme)) ??
         AppThemePreference.system;
@@ -511,6 +526,20 @@ class SettingsService extends ChangeNotifier {
 
   Future<void> setSosConfirmation(bool v) =>
       _write(_kSosConfirmation, () => _sosConfirmation = v, prefsBool: v);
+
+  /// Turns the repeating SOS beep on or off without touching the call or SMS.
+  Future<void> setSosAlertSoundEnabled(bool v) => _write(
+        _kSosAlertSoundEnabled,
+        () => _sosAlertSoundEnabled = v,
+        prefsBool: v,
+      );
+
+  /// Chooses which alert tone repeats while SOS is active.
+  Future<void> setSosAlertTone(SosAlertTone tone) => _write(
+        _kSosAlertTone,
+        () => _sosAlertTone = tone,
+        prefsString: tone.name,
+      );
 
   Future<void> setAppLanguage(String v) =>
       _write(_kAppLanguage, () => _appLanguage = v, prefsString: v);

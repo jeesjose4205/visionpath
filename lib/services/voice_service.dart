@@ -54,6 +54,35 @@ class VoiceService {
   static int _speechGeneration = 0;
   static bool _pumping = false;
 
+  /// When true, routine speech is refused and anything already waiting is
+  /// dropped.
+  ///
+  /// Set by SOS so navigation turns, object detection and long-form reading
+  /// cannot talk over an emergency. Emergency announcements use
+  /// [speakEmergency], which bypasses this gate.
+  static bool _routineBlocked = false;
+
+  /// Whether routine speech is currently blocked by an emergency.
+  static bool get routineSpeechBlocked => _routineBlocked;
+
+  /// Blocks or unblocks routine speech, dropping anything waiting when blocked.
+  ///
+  /// Nothing is queued while blocked, so unblocking cannot replay announcements
+  /// that were produced during the emergency.
+  static void setRoutineSpeechBlocked(bool blocked) {
+    if (_routineBlocked == blocked) return;
+    _routineBlocked = blocked;
+    if (blocked) {
+      _speechQueue.clear();
+      _speechGeneration++;
+      _teardownReading(finalize: true);
+      _speaking = false;
+      if (_tts != null) {
+        unawaited(_tts!.stop().catchError((dynamic _) {}));
+      }
+    }
+  }
+
   // ------------------------------------------------------------------
   // Per-owner settings
   // ------------------------------------------------------------------
@@ -188,6 +217,19 @@ class VoiceService {
   /// navigation greeting. Pending routine sentences are dropped so a hazard
   /// warning is never stuck behind a scene description.
   void speak(String message) {
+    if (!_enabled || _routineBlocked) return;
+    _speechQueue.clear();
+    _speechGeneration++;
+    unawaited(_speak(message));
+  }
+
+  /// Speak an emergency announcement immediately, interrupting anything else.
+  ///
+  /// Unlike [speak] this ignores the routine-speech block, so an SOS status
+  /// update is still audible while navigation and object detection are muted.
+  /// It still respects [enabled]: muting the app's voice stays authoritative
+  /// and the alert tone remains the audible channel.
+  void speakEmergency(String message) {
     if (!_enabled) return;
     _speechQueue.clear();
     _speechGeneration++;
@@ -201,7 +243,7 @@ class VoiceService {
   /// therefore call this on every camera frame: unchanged scenes collapse to
   /// a single queued sentence.
   bool enqueueSpeech(String sentence) {
-    if (!_enabled) return false;
+    if (!_enabled || _routineBlocked) return false;
     final bool added = _speechQueue.add(sentence);
     if (added) unawaited(_pumpSpeechQueue());
     return added;
@@ -224,11 +266,11 @@ class VoiceService {
   /// and the generation check aborts the loop if an interrupting [speak] took
   /// over in the meantime.
   Future<void> _pumpSpeechQueue() async {
-    if (_pumping || !_enabled) return;
+    if (_pumping || !_enabled || _routineBlocked) return;
     _pumping = true;
     final int generation = _speechGeneration;
     try {
-      while (_enabled) {
+      while (_enabled && !_routineBlocked) {
         final String? sentence = _speechQueue.takeNext();
         if (sentence == null) break;
         if (generation != _speechGeneration) {
@@ -305,7 +347,7 @@ class VoiceService {
   /// so reading stays loud even after a stop().
   /// Returns false when speech could not be started.
   Future<bool> speakWait(String message) async {
-    if (!_enabled) return false;
+    if (!_enabled || _routineBlocked) return false;
     await _ensureInitialized();
     if (_tts == null) return false;
     _speaking = true;
@@ -346,7 +388,7 @@ class VoiceService {
     List<String> chunks, {
     void Function()? onDone,
   }) async {
-    if (!_enabled || chunks.isEmpty) {
+    if (!_enabled || chunks.isEmpty || _routineBlocked) {
       _readingDone = onDone;
       _teardownReading(finalize: true);
       return;

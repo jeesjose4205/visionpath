@@ -5,6 +5,7 @@ import 'models/app_settings.dart';
 import 'screens/navigate_screen.dart';
 import 'services/camera_service.dart';
 import 'services/depth_analysis_service.dart';
+import 'services/emergency_contact_service.dart';
 import 'services/familiar_face_service.dart';
 import 'services/face_embedding_service.dart';
 import 'services/navigation_service.dart';
@@ -12,6 +13,7 @@ import 'services/object_detection_service.dart';
 import 'services/path_analysis_service.dart';
 import 'services/position_detection_service.dart';
 import 'services/settings_service.dart';
+import 'services/sos_service.dart';
 import 'services/visora/visora_config.dart';
 import 'widgets/sos_gesture.dart';
 
@@ -23,6 +25,9 @@ Future<void> main() async {
   // Load persisted settings before the first frame so theme/voice behaviour
   // are correct immediately.
   await SettingsService.instance.load();
+  // Emergency contacts must already be in memory: SOS has to be able to call
+  // the primary contact the instant it activates, with no async gap.
+  await EmergencyContactService.instance.load();
   // Load the Visora assistant configuration (endpoint/key/model etc.).
   await VisoraConfig.instance.load();
   runApp(const VisionPathApp());
@@ -33,6 +38,10 @@ class VisionPathApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // SOS needs to mute navigation guidance for the whole app, so it is given
+    // the app-wide navigation service rather than a copy.
+    SosService.instance.attachNavigation(NavigationService.instance);
+
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<CameraService>.value(value: CameraService()),
@@ -45,7 +54,7 @@ class VisionPathApp extends StatelessWidget {
         Provider<DepthAnalysisService>.value(value: DepthAnalysisService()),
         Provider<PathAnalysisService>.value(value: PathAnalysisService()),
         ChangeNotifierProvider<NavigationService>.value(
-          value: NavigationService(),
+          value: NavigationService.instance,
         ),
         ChangeNotifierProvider<FamiliarFaceService>(
           create: (_) => FamiliarFaceService()..load(),
@@ -53,6 +62,10 @@ class VisionPathApp extends StatelessWidget {
         ChangeNotifierProvider<SettingsService>.value(
           value: SettingsService.instance,
         ),
+        // The emergency procedure is app-scoped: its alert must survive
+        // navigating away from the SOS screen, so it is a shared instance
+        // rather than something created per route.
+        ChangeNotifierProvider<SosService>.value(value: SosService.instance),
       ],
       child: const _AppRoot(),
     );

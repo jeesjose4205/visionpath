@@ -2,19 +2,24 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../models/app_settings.dart';
 import '../models/emergency_contact.dart';
+import '../models/sos_session.dart';
 import '../services/emergency_contact_service.dart';
 import '../services/settings_service.dart';
-import '../services/vibration_service.dart';
+import '../services/sos_platform.dart';
+import '../services/sos_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/emergency_contact_card.dart';
 import '../widgets/emergency_location_card.dart';
 import '../widgets/emergency_sos_button.dart';
 import '../widgets/sound_mode_button.dart';
 
+/// The screen's own view of the hold, before the service takes over.
+///
+/// Once SOS is running the service's [SosState] is authoritative, so this is
+/// only used for the idle and counting phases.
 enum _SosStatus { ready, activating, activated }
 
 class EmergencyScreen extends StatefulWidget {
@@ -39,8 +44,23 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     7: 'seven',
   };
 
-  final EmergencyContactService _contactService = EmergencyContactService();
+  /// The app-wide contact store, so the emergency flow and this screen always
+  /// see the same list rather than two divergent copies.
+  final EmergencyContactService _contactService = EmergencyContactService.instance;
+
   final VoiceService _voice = VoiceService();
+
+  /// The single owner of the emergency procedure.
+  ///
+  /// The screen renders [SosService.session] and never calls, texts or plays a
+  /// tone itself, which is what lets the alert keep sounding after the user
+  /// navigates away.
+  final SosService _sos = SosService.instance;
+
+  /// Renders the pill and live status as the session progresses.
+  void _onSosChanged() {
+    if (mounted) setState(() {});
+  }
 
   /// The one SOS press-and-hold state machine.
   ///
@@ -68,6 +88,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     SettingsService.instance.addListener(_applySettings);
     _voice.setEnabled(_voiceEnabled);
     _contactService.addListener(_onContactsChanged);
+    _sos.addListener(_onSosChanged);
     _loadContacts();
     unawaited(_announceScreen());
   }
@@ -109,6 +130,9 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   void dispose() {
     SettingsService.instance.removeListener(_applySettings);
     _contactService.removeListener(_onContactsChanged);
+    // Only the observer is removed. The SOS session deliberately keeps running
+    // after this screen is gone, so the alert survives leaving the screen.
+    _sos.removeListener(_onSosChanged);
     _hold.dispose();
     _voice.setEnabled(false);
     unawaited(_voice.dispose());
@@ -128,24 +152,16 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     }
   }
 
+  /// Hands over to [SosService] and renders whatever it reports.
+  ///
+  /// There is deliberately no contact picker and no Call button here: the
+  /// service places the call itself, so a second tap is never required.
   void _onActivated() {
     if (!mounted) return;
     setState(() => _status = _SosStatus.activated);
-    if (SettingsService.instance.vibrateMode) {
-      // Ringer in vibrate mode: a sustained ~2s buzz marks the activation.
-      VibrationService.instance.vibrateSOS();
-    } else {
-      _voice.speak('SOS activated.');
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final contacts = _contactService.contacts;
-      if (!SettingsService.instance.sosConfirmation && contacts.isNotEmpty) {
-        _callContact(contacts.first);
-      } else {
-        _showContactSheet();
-      }
-    });
+    // The service owns the alert tone, the vibration, the call, GPS and the
+    // message. Starting it is the whole activation.
+    unawaited(_sos.activate());
   }
 
   void _onCancelled() {
@@ -164,175 +180,31 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
       _status = _SosStatus.ready;
       _countdown = _holdSeconds;
     });
+    // Ends the tone, the speech suppression and the whole session. Reset is the
+    // only thing the user has to do to stop the emergency.
+    unawaited(_sos.reset());
     _voice.speak('SOS deactivated. Stay safe.');
     showMessage(context, 'SOS reset.');
   }
 
-  void _showContactSheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-      ),
-      builder: (ctx) {
-        final contacts = _contactService.contacts;
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-            child: contacts.isEmpty
-                ? Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.person_add_alt_1_rounded,
-                        size: 46,
-                        color: _sub.withValues(alpha: 0.6),
-                      ),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'No emergency contacts yet',
-                        style: TextStyle(
-                          color: _ink,
-                          fontSize: 17,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        'Add a contact so you can call someone for help '
-                        'after activating SOS.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: _sub),
-                      ),
-                      const SizedBox(height: 16),
-                      FilledButton.icon(
-                        onPressed: () {
-                          Navigator.of(ctx).pop();
-                          _openAddContact();
-                        },
-                        style: FilledButton.styleFrom(
-                          backgroundColor: _accent,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 22,
-                            vertical: 12,
-                          ),
-                        ),
-                        icon: const Icon(Icons.person_add_alt_1_rounded),
-                        label: const Text('Add Emergency Contact'),
-                      ),
-                    ],
-                  )
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text(
-                        'Choose an emergency contact to call',
-                        style: TextStyle(
-                          color: _ink,
-                          fontSize: 17,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        'The dialer will open with the number ready.',
-                        style: TextStyle(color: _sub, fontSize: 13),
-                      ),
-                      const SizedBox(height: 10),
-                      for (final contact in contacts)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: _border),
-                            ),
-                            child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 2,
-                              ),
-                              leading: Container(
-                                width: 42,
-                                height: 42,
-                                decoration: const BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Color(0xFFFFF0EE),
-                                ),
-                                child: Center(
-                                  child: Text(
-                                    contact.name.trim().isEmpty
-                                        ? '?'
-                                        : contact.name.trim().characters.first
-                                            .toUpperCase(),
-                                    style: const TextStyle(
-                                      color: Color(0xFFE63B3B),
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              title: Text(
-                                contact.name,
-                                style: const TextStyle(
-                                  color: _ink,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              subtitle: Text(
-                                contact.phone,
-                                style: const TextStyle(color: _sub),
-                              ),
-                              trailing: FilledButton.icon(
-                                onPressed: () {
-                                  Navigator.of(ctx).pop();
-                                  _callContact(contact);
-                                },
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: const Color(0xFF2E7D32),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                ),
-                                icon: const Icon(
-                                  Icons.call_rounded,
-                                  size: 18,
-                                ),
-                                label: const Text('Call'),
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-          ),
-        );
-      },
-    );
-  }
-
+  /// Manually calls one contact from the contacts card.
+  ///
+  /// This is contact management, not part of the automatic SOS procedure, which
+  /// never asks the user to choose anyone. It uses the same direct-call path so
+  /// an explicit tap also connects without a second confirmation.
   Future<void> _callContact(EmergencyContact contact) async {
-    _voice.speak('Calling ${contact.name}.');
-    final uri = Uri(scheme: 'tel', path: contact.phone);
-    try {
-      final canLaunch = await canLaunchUrl(uri);
-      if (!mounted) return;
-      if (canLaunch) {
-        await launchUrl(uri);
-        if (!mounted) return;
-        showMessage(context, 'Opening dialer for ${contact.name}...');
-      } else {
-        showMessage(context, 'Unable to open the phone dialer.');
-      }
-    } catch (_) {
-      if (!mounted) return;
-      showMessage(context, 'Unable to open the phone dialer.');
+    final SosCallResult result =
+        await const SosPlatform().placeDirectCall(contact.phone);
+    if (!mounted) return;
+    if (result.succeeded) {
+      showMessage(context, 'Calling ${contact.name}.');
+    } else if (result.openedDialerInstead) {
+      showMessage(context, 'Press call on the dialer to connect.');
+    } else {
+      showMessage(
+        context,
+        result.blocker?.message ?? 'The call could not be placed.',
+      );
     }
   }
 
@@ -466,7 +338,10 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                   }
                   final contactsBlock = _contactsHeight(cardH, n);
                   var sosH = height - 60 - 66 - contactsBlock;
-                  if (sosH > 360) sosH = 360;
+                  // The live status needs more vertical room than the idle
+                  // button, but only while SOS is actually running.
+                  final double cap = _sos.session.canReset ? 460 : 360;
+                  if (sosH > cap) sosH = cap;
 
                   return Column(
                     children: [
@@ -479,7 +354,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                       const Spacer(),
                       _buildContactsCard(cardH),
                       const SizedBox(height: 10),
-                      const EmergencyLocationCard(),
+                      EmergencyLocationCard(session: _sos.session),
                       const SizedBox(height: 10),
                     ],
                   );
@@ -550,26 +425,49 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     );
   }
 
+  /// Status pill, button, and the live emergency status while SOS runs.
+  ///
+  /// The service's state is authoritative once SOS starts, so the pill can
+  /// never claim "ACTIVATED" while the session is actually inactive.
   Widget _buildSosPanel() {
-    final (Color bg, Color fg, Color dot, String text) = switch (_status) {
-      _SosStatus.ready => (
-          const Color(0xFFE4F8EF),
-          const Color(0xFF15805A),
-          const Color(0xFF2EBD6E),
-          'READY',
-        ),
-      _SosStatus.activating => (
+    final SosSession live = _sos.session;
+    // Null means the service has no live session, so the hold UI is in charge.
+    final SosState? state = live.canReset ? live.state : null;
+    final bool countingDown =
+        _status == _SosStatus.activating && state == null;
+
+    final (Color bg, Color fg, Color dot, String text) = switch (state) {
+      SosState.activating => (
           const Color(0xFFFFF4E0),
           const Color(0xFFB26A00),
           const Color(0xFFE6A700),
-          'ACTIVATING · $_countdown',
+          'ACTIVATING',
         ),
-      _SosStatus.activated => (
+      SosState.active => (
           const Color(0xFFFFE8E8),
           const Color(0xFFC62828),
           const Color(0xFFFF5C63),
-          'ACTIVATED',
+          'SOS ACTIVE',
         ),
+      SosState.resetting => (
+          const Color(0xFFF1F5F9),
+          const Color(0xFF475569),
+          const Color(0xFF94A3B8),
+          'STOPPING',
+        ),
+      _ => countingDown
+          ? (
+              const Color(0xFFFFF4E0),
+              const Color(0xFFB26A00),
+              const Color(0xFFE6A700),
+              'ACTIVATING · $_countdown',
+            )
+          : (
+              const Color(0xFFE4F8EF),
+              const Color(0xFF15805A),
+              const Color(0xFF2EBD6E),
+              'READY',
+            ),
     };
 
     return Container(
@@ -622,11 +520,157 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
           const SizedBox(height: 6),
           Expanded(
             child: Center(
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: EmergencySOSButton(controller: _hold),
-              ),
+              child: _sos.session.canReset
+                  ? _buildActiveStatus()
+                  : FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: EmergencySOSButton(controller: _hold),
+                    ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Live status for a running SOS session.
+  ///
+  /// Replaces the hold button while the emergency is in progress: there is no
+  /// Call button here, because the call has already been placed automatically,
+  /// and no second confirmation is ever asked for.
+  Widget _buildActiveStatus() {
+    final SosSession s = _sos.session;
+
+    /// One status row: an icon, a label, and an optional explanation.
+  Widget _buildStatusRow({
+    required String label,
+    required SosStep step,
+    required bool done,
+    String? detail,
+  }) {
+    final Color color = done
+        ? const Color(0xFF15805A)
+        : step == SosStep.pending
+            ? _sub
+            : const Color(0xFFB26A00);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            done
+                ? Icons.check_circle_rounded
+                : step == SosStep.pending
+                    ? Icons.circle_outlined
+                    : Icons.pending_rounded,
+            size: 15,
+            color: color,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (detail != null && detail.isNotEmpty)
+                  Text(
+                    detail,
+                    style: const TextStyle(
+                      color: _sub,
+                      fontSize: 11,
+                      height: 1.3,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            s.hasContact ? s.contactName : 'No contact saved',
+            style: const TextStyle(
+              color: _ink,
+              fontSize: 19,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 2),
+          const Text(
+            'Emergency assistance is being contacted.',
+            style: TextStyle(color: _sub, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          _buildStatusRow(
+            label: 'Calling',
+            step: s.callStep,
+            done: s.callStep == SosStep.callConnected,
+            detail: switch (s.callStep) {
+              SosStep.callConnected => 'Call placed automatically.',
+              SosStep.callNeedsUserTap => s.callBlockerMessage,
+              SosStep.callFailed => s.callBlockerMessage,
+              SosStep.calling => 'Starting the call…',
+              _ => null,
+            },
+          ),
+          _buildStatusRow(
+            label: 'Location',
+            step: s.locationStep,
+            done: s.locationStep == SosStep.locationFound,
+            detail: switch (s.locationStep) {
+              SosStep.locationFound =>
+                s.location?.coordinates ?? 'Fix obtained.',
+              SosStep.locationUnavailable => s.locationBlockerMessage,
+              SosStep.locating => 'Getting your position…',
+              _ => null,
+            },
+          ),
+          _buildStatusRow(
+            label: 'Message',
+            step: s.smsStep,
+            done: s.smsStep == SosStep.messageDelivered,
+            detail: switch (s.smsStep) {
+              SosStep.messageDelivered => 'Location sent and delivered.',
+              SosStep.messageNotDelivered => s.smsBlockerMessage,
+              SosStep.sendingMessage => 'Sending your location…',
+              _ => null,
+            },
+          ),
+          _buildStatusRow(
+            label: 'Alert',
+            step: SosStep.alerting,
+            done: s.alerting,
+            detail: s.alerting
+                ? 'Repeating alert is sounding.'
+                : 'Alert sound is switched off.',
+          ),
+          const SizedBox(height: 4),
+          FilledButton.icon(
+            onPressed: _onReset,
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF64748B),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              padding: const EdgeInsets.symmetric(vertical: 13),
+            ),
+            icon: const Icon(Icons.stop_circle_outlined, size: 19),
+            label: const Text('Reset SOS'),
           ),
         ],
       ),

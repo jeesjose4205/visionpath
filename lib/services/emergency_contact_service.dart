@@ -19,6 +19,12 @@ class EmergencyContactService extends ChangeNotifier {
   static const int maxContacts = 5;
   static const String _contactsKey = 'emergency_contacts';
 
+  /// The app-wide instance.
+  ///
+  /// The SOS flow has to read the primary contact without the SOS screen being
+  /// on screen at all, so the list cannot be owned by a widget.
+  static final EmergencyContactService instance = EmergencyContactService();
+
   final List<EmergencyContact> _contacts = [];
   bool _loaded = false;
 

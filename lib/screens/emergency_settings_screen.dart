@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/app_settings.dart';
 import '../services/settings_service.dart';
 import '../widgets/settings_widgets.dart';
 import '../widgets/sos_gesture.dart';
@@ -67,17 +68,42 @@ class EmergencySettingsScreen extends StatelessWidget {
                     ),
                     _divider(),
                     SettingsToggle(
-                      title: 'SOS Confirmation',
+                      title: 'SOS Alert Sound',
                       description:
-                          'Speak a short confirmation before dispatching. '
-                          'Keep this on to avoid accidental calls.',
-                      value: s.sosConfirmation,
+                          'Repeating alarm while SOS runs, so you can still '
+                          'hear it in your pocket. The call, your location and '
+                          'the message are sent either way.',
+                      value: s.sosAlertSoundEnabled,
                       onChanged: (v) {
                         HapticFeedback.selectionClick();
-                        s.setSosConfirmation(v);
+                        s.setSosAlertSoundEnabled(v);
+                      },
+                    ),
+                    _divider(),
+                    SettingsChoice(
+                      title: 'SOS Alert Tone',
+                      selected: s.sosAlertTone.label,
+                      description: 'Which repeating alarm SOS plays.',
+                      choices: [
+                        for (final SosAlertTone tone in SosAlertTone.values)
+                          (label: tone.label, value: tone.name),
+                      ],
+                      onSelected: (v) {
+                        HapticFeedback.selectionClick();
+                        s.setSosAlertTone(SosAlertTone.fromName(v));
                       },
                     ),
                   ],
+                ),
+              ),
+              const SettingsSectionTitle('Permissions'),
+              const SettingsCard(
+                child: SettingsNote(
+                  'The first time you activate SOS, the app asks for phone, '
+                  'location and message permission so it can call, share your '
+                  'position and text your contact without extra taps. Denying '
+                  'any of them is reported on the SOS screen instead of '
+                  'silently failing.',
                 ),
               ),
               const SettingsNote(

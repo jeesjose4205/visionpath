@@ -19,3 +19,32 @@ enum GuidanceMode { balanced, moreFrequent, minimal }
 enum AlertMode { sound, muted }
 
 enum AppThemePreference { system, light, dark }
+
+/// The alert tone that repeats while SOS is active.
+///
+/// Persisted by [name], so these names are a storage format: renaming one
+/// silently resets every existing user's choice. The wire value doubles as the
+/// key the Android side looks up.
+enum SosAlertTone {
+  beep1('Beep 1', 'A short single pip, repeating.'),
+  beep2('Beep 2', 'A higher, sharper beep.'),
+  beep3('Beep 3', 'A mid, steadier beep.'),
+  emergency('Emergency Tone', 'The urgent two-tone alert. Recommended.'),
+  siren('Siren', 'The longest, most attention-grabbing tone.');
+
+  const SosAlertTone(this.label, this.description);
+
+  /// Name shown in Settings.
+  final String label;
+
+  /// One-line explanation, so the choice is audible-friendly.
+  final String description;
+
+  /// Readable back from storage, falling back to the safest loud option.
+  static SosAlertTone fromName(String? name) {
+    return SosAlertTone.values.firstWhere(
+      (SosAlertTone tone) => tone.name == name,
+      orElse: () => SosAlertTone.emergency,
+    );
+  }
+}

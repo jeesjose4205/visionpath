@@ -23,6 +23,12 @@ import 'scene_announcer.dart';
 /// Safety: the system never guarantees a safe path; it reports what the
 /// environment "appears" to allow based on limited camera analysis.
 class NavigationService with ChangeNotifier {
+  /// The app-wide instance.
+  ///
+  /// SOS has to mute guidance for the whole app, which requires the same
+  /// instance the navigate screen uses rather than a per-widget copy.
+  static final NavigationService instance = NavigationService();
+
   NavigationDecision _lastDecision = NavigationDecision.forward;
   String _lastReason = '';
   String _lastSpokenMessage = '';

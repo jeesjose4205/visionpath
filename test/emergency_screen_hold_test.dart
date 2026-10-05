@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:visionpath/screens/emergency_screen.dart';
 import 'package:visionpath/services/settings_service.dart';
+import 'package:visionpath/services/sos_service.dart';
 import 'package:visionpath/widgets/emergency_sos_button.dart';
 import 'package:visionpath/widgets/sound_mode_button.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 /// The SOS hold must work anywhere on the SOS screen, not only on the button,
 /// while every existing control on that screen keeps working normally.
@@ -18,6 +19,9 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
+    // SOS is an app-scoped singleton, so a session left active by one test
+    // would otherwise leak into the next.
+    addTearDown(SosService.instance.reset);
   });
 
   void setPhone(WidgetTester tester) {
@@ -47,10 +51,15 @@ void main() {
   }
 
 
+  /// Asserts SOS actually started.
+  ///
+  /// Reads the service rather than a label, because the service is the owner of
+  /// the procedure now; the pill text is presentation and must not be what
+  /// proves an emergency started.
   void expectActivated(WidgetTester tester, String where) {
     expect(
-      find.text('SOS Activated'),
-      findsOneWidget,
+      SosService.instance.session.canReset,
+      isTrue,
       reason: 'holding the $where must activate SOS',
     );
   }
@@ -176,6 +185,21 @@ void main() {
 
     expect(SettingsService.instance.alertMode, isNot(before));
     expect(find.text('SOS Activated'), findsNothing);
+  });
+
+  testWidgets('a hold that activates SOS never offers a second Call button',
+      (tester) async {
+    setPhone(tester);
+    await pumpScreen(tester);
+
+    await holdAt(tester, const Offset(200, 430));
+    expect(SosService.instance.session.canReset, isTrue);
+
+    // The procedure is automatic: the user must never be asked to pick a
+    // contact or press Call again.
+    expect(find.text('Call'), findsNothing);
+    expect(find.textContaining('Choose an emergency contact'), findsNothing);
+    expect(find.text('Reset SOS'), findsOneWidget);
   });
 
   testWidgets('the screen no longer opens anything by horizontal swipe',

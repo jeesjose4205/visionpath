@@ -3,6 +3,25 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!--
+      Emergency (SOS) permissions.
+
+      CALL_PHONE is what lets the app place a call directly instead of opening
+      a pre-filled dialer that the user still has to confirm. SEND_SMS lets the
+      emergency location message go out without a composer. The location
+      permissions supply the coordinates included in that message.
+
+      All four are dangerous permissions, so they are requested at runtime by
+      SosPlatform only when an SOS session needs them - never at startup.
+    -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- GPS/network fixes are optional: SOS still calls and texts without one. -->
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <application
         android:label="visionpath"
         android:name="${applicationName}"
