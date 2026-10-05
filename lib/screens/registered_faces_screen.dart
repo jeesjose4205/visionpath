@@ -9,7 +9,6 @@ import '../services/settings_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/settings_button.dart';
 import '../widgets/sound_mode_button.dart';
-import '../widgets/visora/visora_overlay.dart';
 
 /// Registered faces management screen - lists every person stored on this
 /// device and lets the user speak a name aloud, rename a person, or delete
@@ -48,14 +47,12 @@ class _RegisteredFacesScreenState extends State<RegisteredFacesScreen> {
     super.dispose();
   }
 
-  void _applyVoiceSettings() {
+void _applyVoiceSettings() {
     final s = SettingsService.instance;
-    _voiceEnabled =
-        s.voiceGuidanceEnabled && !s.globalVoiceMuted && !s.vibrateMode;
+    // Global Voice Guidance / Global Voice Mute are enforced centrally by
+    // VoiceService, so only feature intent is declared here.
+    _voiceEnabled = !s.vibrateMode;
     _voice.setEnabled(_voiceEnabled);
-    unawaited(_voice.setSpeechRate(s.speechRateValue));
-    unawaited(_voice.setVolume(s.voiceVolume));
-    unawaited(_voice.setLanguage(s.voiceLanguageTag));
     if (mounted) setState(() {});
   }
 
@@ -232,10 +229,6 @@ class _RegisteredFacesScreenState extends State<RegisteredFacesScreen> {
     );
   }
 
-  Future<void> _openVisora() async {
-    if (!mounted) return;
-    await VisoraOverlay.show(context);
-  }
 
   Widget _buildHeader(bool compact) {
     return Padding(
@@ -273,11 +266,6 @@ class _RegisteredFacesScreenState extends State<RegisteredFacesScreen> {
             ),
           ),
           const SizedBox(width: 12),
-          _HeaderButton(
-            icon: Icons.auto_awesome_rounded,
-            label: 'Visora AI assistant',
-            onTap: () => unawaited(_openVisora()),
-          ),
           const SizedBox(width: 10),
           // Ringer switch: sound -> vibrate -> muted.
           SoundModeButton(),

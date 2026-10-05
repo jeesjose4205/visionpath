@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_tts/flutter_tts.dart';
 
+import 'settings_service.dart';
 import 'speech_queue.dart';
 
 /// VoiceService provides optional spoken navigation guidance.
@@ -84,14 +86,41 @@ class VoiceService {
   }
 
   // ------------------------------------------------------------------
+  // Authoritative voice settings (derived from SettingsService)
+  // ------------------------------------------------------------------
+
+  /// Rate / volume / language currently applied to the shared engine.
+  ///
+  /// These are process-wide because the engine is process-wide: if each screen
+  /// kept its own copy, whichever screen configured last would silently
+  /// override the others and the same utterance could be spoken at different
+  /// rates depending on who asked for it. They are **derived** from
+  /// [SettingsService] — never authored here — and [bindToSettings] keeps them
+  /// in sync, which makes [SettingsService] the single source of truth while
+  /// these stay a reliable runtime cache.
+  static double _speechRate = 0.5;
+  static double _volume = 1.0;
+  static String _language = 'en-US';
+
+  /// Whether routine speech is currently refused because of user settings.
+  ///
+  /// Distinct from [_routineBlocked], which is the transient emergency gate.
+  /// This one is persistent and comes straight from SettingsService, so a
+  /// screen cannot accidentally re-enable voice that the user turned off.
+  static bool get _settingsGateOpen =>
+      SettingsService.instance.voiceGuidanceEnabled &&
+      !SettingsService.instance.globalVoiceMuted;
+
+  // ------------------------------------------------------------------
   // Per-owner settings
   // ------------------------------------------------------------------
 
+  /// Whether THIS owner wants voice.
+  ///
+  /// Feature-level intent only (e.g. "object detection voice on"). Global
+  /// enablement is never stored here: that is [_settingsGateOpen], applied at
+  /// the point of speech.
   bool _enabled = false;
-
-  double _speechRate = 0.5;
-  double _volume = 1.0;
-  String _language = 'en-US';
 
   /// Invoked when a fire-and-forget [speak] utterance finishes (or is stopped).
   void Function()? onSpeakCompleted;
@@ -120,16 +149,108 @@ class VoiceService {
   /// Whether any routine sentence is still waiting.
   bool get hasPendingSpeech => _speechQueue.hasPending;
 
-  /// Currently configured speech rate (0.0–1.0).
+  /// Currently applied speech rate (0.0–1.0). Derived from SettingsService.
   double get speechRate => _speechRate;
 
-  /// Currently configured volume (0.0–1.0).
+  /// Currently applied volume (0.0–1.0). Derived from SettingsService.
   double get volume => _volume;
 
-  /// Currently configured TTS language tag (e.g. `en-US`).
+  /// Currently applied TTS language tag (e.g. `en-US`). Derived from
+  /// SettingsService.
   String get language => _language;
 
-  /// Enable/disable voice guidance.
+  /// Whether the user currently allows routine speech at all.
+  ///
+  /// True only when Voice Guidance is on and Global Voice Mute is off. Read by
+  /// screens to decide whether to start a feature's voice work, so no screen
+  /// has to reimplement the combination rule.
+  static bool get routineVoiceAllowed => _settingsGateOpen;
+
+  /// Point the shared engine at the current SettingsService values and keep it
+  /// there.
+  ///
+  /// Called once from `main` after the singleton has loaded. Idempotent: a
+  /// second call replaces the binding rather than adding a second listener, so
+  /// no screen (and no hot restart in a test) can end up with duplicated
+  /// application of the same settings.
+  static void bindToSettings([SettingsService? service]) {
+    final SettingsService settings = service ?? SettingsService.instance;
+    if (_boundSettings != null) {
+      if (identical(_boundSettings, settings)) {
+        // Already bound to this instance: just re-apply so a reload is picked up.
+        unawaited(applySettings(settings));
+        return;
+      }
+      _boundSettings!.removeListener(_onSettingsChanged);
+    }
+    _boundSettings = settings;
+    settings.addListener(_onSettingsChanged);
+    unawaited(applySettings(settings));
+  }
+
+  /// Push the given settings onto the shared engine immediately.
+  ///
+  /// Safe to call before the engine exists: the values are stored statically and
+  /// reasserted on (re)initialization, so initialization can never pick up a
+  /// stale configuration.
+  static Future<void> applySettings([SettingsService? service]) async {
+    final SettingsService s = service ?? SettingsService.instance;
+    _speechRate = s.speechRateValue.clamp(0.0, 1.0);
+    _volume = s.voiceVolume.clamp(0.0, 1.0);
+    _language = s.voiceLanguageTag;
+    if (!_initialized || _tts == null) return;
+    try {
+      await _tts!.setSpeechRate(_speechRate);
+    } catch (e) {
+      print('VOICE_SET_RATE_FAILED: $e');
+    }
+    try {
+      await _tts!.setVolume(_volume);
+    } catch (e) {
+      print('VOICE_SET_VOLUME_FAILED: $e');
+    }
+    try {
+      await _tts!.setLanguage(_language);
+    } catch (e) {
+      print('VOICE_SET_LANGUAGE_FAILED: $e');
+    }
+  }
+
+  static SettingsService? _boundSettings;
+
+  /// Test-only view of the values the engine is actually configured with.
+  ///
+  /// These are the values pushed onto the native engine by [applySettings], so
+  /// asserting on them proves the centralization worked rather than merely that
+  /// SettingsService stored something.
+  @visibleForTesting
+  static double get debugSpeechRate => _speechRate;
+
+  @visibleForTesting
+  static double get debugVolume => _volume;
+
+  @visibleForTesting
+  static String get debugLanguage => _language;
+
+  static void _onSettingsChanged() {
+    unawaited(applySettings(_boundSettings ?? SettingsService.instance));
+    // Turning voice off has to take effect immediately, not at the next
+    // utterance: a half-spoken hazard warning would otherwise keep going.
+    if (!_settingsGateOpen) {
+      _speechQueue.clear();
+      _speaking = false;
+      _teardownReading(finalize: true);
+      if (_tts != null) {
+        unawaited(_tts!.stop().catchError((dynamic _) {}));
+      }
+    }
+  }
+
+  /// Enable/disable voice for this owner.
+  ///
+  /// This is feature intent, not the global switch. The user-level gates
+  /// (Voice Guidance / Global Voice Mute) are enforced centrally in [speak],
+  /// [enqueueSpeech] and the reading paths.
   void setEnabled(bool value) {
     _enabled = value;
     if (!value) {
@@ -137,40 +258,39 @@ class VoiceService {
     }
   }
 
-  /// Configure the speech rate. Applies immediately if the engine is ready
-  /// and is applied on (re)initialization otherwise.
-  Future<void> setSpeechRate(double value) async {
-    _speechRate = value.clamp(0.0, 1.0);
-    if (_initialized && _tts != null) {
-      try {
-        await _tts!.setSpeechRate(_speechRate);
-      } catch (e) {
-        print('VOICE_SET_RATE_FAILED: $e');
-      }
-    }
+  /// Whether speech from this owner would currently be heard.
+  ///
+  /// Combines the owner's own intent with the global user settings, so a screen
+  /// never has to reimplement the rule.
+  bool get canSpeak => _enabled && _settingsGateOpen;
+
+  /// Speak [message] using a temporary speech rate.
+  ///
+  /// Used by Read Text so "Reading Speed" controls OCR read-aloud without
+  /// touching the global Speech Rate. The previous rate is restored when the
+  /// utterance finishes, so the next navigation instruction still uses the
+  /// configured global rate.
+  void speakAtRate(String message, double rate) {
+    unawaited(_speakAtRate(message, rate.clamp(0.0, 1.0)));
   }
 
-  /// Configure the output volume. Applies immediately if ready.
-  Future<void> setVolume(double value) async {
-    _volume = value.clamp(0.0, 1.0);
-    if (_initialized && _tts != null) {
-      try {
-        await _tts!.setVolume(_volume);
-      } catch (e) {
-        print('VOICE_SET_VOLUME_FAILED: $e');
-      }
-    }
-  }
-
-  /// Configure the TTS language tag. Applies immediately if ready.
-  Future<void> setLanguage(String languageTag) async {
-    _language = languageTag;
-    if (_initialized && _tts != null) {
-      try {
-        await _tts!.setLanguage(_language);
-      } catch (e) {
-        print('VOICE_SET_LANGUAGE_FAILED: $e');
-      }
+  Future<void> _speakAtRate(String message, double rate) async {
+    if (!canSpeak || _routineBlocked) return;
+    await _ensureInitialized();
+    final FlutterTts? tts = _tts;
+    if (tts == null) return;
+    _speaking = true;
+    try {
+      await tts.stop();
+      await tts.setSpeechRate(rate);
+      await tts.speak(message);
+    } catch (e) {
+      print('VOICE_SPEAK_FAILED: $e');
+    } finally {
+      _speaking = false;
+      // Reading speed is per-utterance; global rate must win again afterwards.
+      unawaited(tts.setSpeechRate(_speechRate).catchError((dynamic _) {}));
+      onSpeakCompleted?.call();
     }
   }
 
@@ -217,7 +337,7 @@ class VoiceService {
   /// navigation greeting. Pending routine sentences are dropped so a hazard
   /// warning is never stuck behind a scene description.
   void speak(String message) {
-    if (!_enabled || _routineBlocked) return;
+    if (!canSpeak || _routineBlocked) return;
     _speechQueue.clear();
     _speechGeneration++;
     unawaited(_speak(message));
@@ -354,7 +474,9 @@ class VoiceService {
     try {
       print('VOICE_SPEAK_WAIT: ${message.length} chars');
       await _tts!.stop();
-      await _tts!.setVolume(1.0);
+      // Respect the user's Voice Volume. Hardcoding 1.0 here made reading the
+      // loudest possible output in the app while the slider said otherwise.
+      await _tts!.setVolume(_volume);
       await _tts!.setPitch(1.0);
       // focus:true requests audio focus so the reading is audible over media.
       final estimate = Duration(
@@ -387,8 +509,9 @@ class VoiceService {
   Future<void> speakAllText(
     List<String> chunks, {
     void Function()? onDone,
+    double? speechRateOverride,
   }) async {
-    if (!_enabled || chunks.isEmpty || _routineBlocked) {
+    if (!canSpeak || chunks.isEmpty || _routineBlocked) {
       _readingDone = onDone;
       _teardownReading(finalize: true);
       return;
@@ -406,8 +529,16 @@ class VoiceService {
     _speaking = true;
     try {
       await _tts!.stop();
-      await _tts!.setVolume(1.0);
+      // Reading honors Voice Volume like every other utterance; only the rate
+      // is overridden, and only for the duration of this reading.
+      await _tts!.setVolume(_volume);
       await _tts!.setPitch(1.0);
+      // A caller-supplied rate (Read Text "Reading Speed") owns the engine for
+      // the duration of the reading only; the global Speech Rate is restored
+      // when the reading tears down.
+      if (speechRateOverride != null) {
+        await _tts!.setSpeechRate(speechRateOverride.clamp(0.0, 1.0));
+      }
       await _tts!.setQueueMode(_queueAdd);
       _queueModeAdd = true;
       _pendingChunks = chunks.length;
@@ -458,6 +589,11 @@ class VoiceService {
       _pendingChunks = 0;
       _speaking = false;
       unawaited(_tts?.setQueueMode(_queueFlush).catchError((dynamic _) {}));
+      // Reading may have overridden the rate; the global Speech Rate is
+      // authoritative for everything that is not a reading.
+      unawaited(
+        _tts?.setSpeechRate(_speechRate).catchError((dynamic _) {}),
+      );
     }
     if (finalize) {
       _readingWatchdog?.cancel();

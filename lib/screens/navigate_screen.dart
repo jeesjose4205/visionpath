@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/detected_object.dart';
@@ -22,15 +21,16 @@ import '../services/path_analysis_service.dart';
 import '../services/position_detection_service.dart';
 import '../services/scene_announcer.dart';
 import '../services/settings_service.dart';
+import '../services/speech_capture_service.dart';
 import '../services/target_navigation_service.dart';
 import '../services/vibration_service.dart';
 import '../services/voice_service.dart';
-import '../services/visora/visora_session.dart';
 import '../services/voice_command_controller.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/depth_debug_overlay.dart';
 import '../widgets/detection_overlay.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/settings_scope.dart';
 import '../widgets/sos_gesture.dart';
 import '../widgets/sound_mode_button.dart';
 import '../widgets/target_status_chip.dart';
@@ -214,11 +214,20 @@ final VoiceCommandController _voiceCommand = VoiceCommandController();
         ? const FamiliarFacesScreen()
         : const ReadTextScreen();
 
+    // Reduced Animations collapses the swipe transition to an instant cut. The
+    // post-pop delay below is kept regardless, because it exists to let the
+    // outgoing screen's TTS teardown finish, not to pace the animation.
+    final bool reduceMotion = SettingsScope.of(context).reduceAnimations;
+    final Duration pushDuration =
+        reduceMotion ? Duration.zero : _kPushDuration;
+    final Duration reverseDuration =
+        reduceMotion ? Duration.zero : _kReverseDuration;
+
     _swipeNavLocked = true;
     await Navigator.of(context).push(
       PageRouteBuilder<void>(
-        transitionDuration: _kPushDuration,
-        reverseTransitionDuration: _kReverseDuration,
+        transitionDuration: pushDuration,
+        reverseTransitionDuration: reverseDuration,
         pageBuilder: (context, animation, secondaryAnimation) => screen,
         // Carousel: the screens move together on a single horizontal track, like a
         // photo pager. The incoming screen tracks in from the swipe side while
@@ -249,7 +258,7 @@ final VoiceCommandController _voiceCommand = VoiceCommandController();
     // exit animation finishes. flutter_tts shares ONE native engine, so that
     // late stop would cut the greeting off mid-word ("nav..."). Hold the swipe
     // lock and announce only after the old screen has fully torn down.
-    await Future<void>.delayed(_kReverseDuration);
+    await Future<void>.delayed(reverseDuration);
     await Future<void>.delayed(const Duration(milliseconds: 250));
     _swipeNavLocked = false;
     if (mounted) _speakNavigationGreeting();
@@ -285,7 +294,7 @@ final VoiceCommandController _voiceCommand = VoiceCommandController();
       vsync: this,
       duration: const Duration(milliseconds: 460),
     )..forward();
-    _initVisora();
+    _initVoiceCommands();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       // Pre-warm the camera controller so START NAVIGATION reveals a live
@@ -299,51 +308,61 @@ final VoiceCommandController _voiceCommand = VoiceCommandController();
   }
 
   // ------------------------------------------------------------
-  // VISORA ASSISTANT (wake word + web speech host)
+  // VOICE COMMANDS (press-and-hold + hidden web speech host)
   // ------------------------------------------------------------
 
-  void _initVisora() {
+  void _initVoiceCommands() {
     // Widget tests have no platform plugins and no native speech stack;
     // the loopback HTTP server for the hidden WebView also leaves timers
-    // that fail the test harness. Skip the whole assistant bootstrap there.
+    // that fail the test harness. Skip the whole speech bootstrap there.
     if (Platform.environment['FLUTTER_TEST'] != null) return;
     // The hidden Google speech WebView (hosted at the bottom of the body)
     // must be bound to its loopback server once, or its recognizer never
-    // becomes ready inside the assistant overlay.
-    unawaited(VisoraSession.instance.webEngine.start());
-    // No wake-word detector here on purpose. It owns a second
-    // speech-recognition session, and press-and-hold needs the single
-    // recognizer that [VoiceCommandController] borrows from VisoraSession.
-    // A background listener would seize the microphone the instant a hold
-    // ended, and the two engines would compete for the same audio.
+    // becomes ready for a press-and-hold command.
+    unawaited(SpeechCaptureService.instance.webEngine.start());
+    // No wake-word or always-on listener here on purpose. Either would own a
+    // second speech-recognition session and seize the microphone the instant a
+    // hold ended, so the two engines would compete for the same audio.
   }
 
   /// Applies persisted settings to this screen's live services.
   void _applySettings() {
     final s = SettingsService.instance;
-    // Navigation/Detection voice toggles gate LIVE obstacle guidance only;
-    // the on-screen greeting still respects the global voice switch.
-    _voiceGuidance = s.voiceGuidanceEnabled &&
-        s.navigationVoiceEnabled &&
-        s.detectionVoiceEnabled;
+    // Navigation/Detection voice toggles gate LIVE obstacle guidance only.
+    // The global Voice Guidance / Global Voice Mute combination is enforced
+    // centrally by VoiceService, so it is deliberately NOT duplicated here.
+    _voiceGuidance = s.navigationVoiceEnabled && s.detectionVoiceEnabled;
     setState(() {});
-    _voiceService.setEnabled(
-        s.voiceGuidanceEnabled && !s.globalVoiceMuted);
+    // Feature intent only ("navigation wants to speak"), never the global
+    // mute, so this screen cannot re-enable what the user turned off.
+    _voiceService.setEnabled(true);
     final ods = _objectDetectionService;
     if (ods != null) {
       ods.confidenceThreshold = s.detectionConfidenceThreshold;
     }
+    // Guidance Frequency (1.5/3/6 s) and Announcement Frequency (2/3/5/8 s) both
+    // mean "don't interrupt faster than this", so the effective cooldown is the
+    // more restrictive of the two. See [InstructionManager] for the rationale.
+    final Duration guidanceCooldown;
     switch (s.guidanceMode) {
-      case GuidanceMode.balanced:
-        _instructionManager.repeatCooldown = const Duration(milliseconds: 3000);
-        break;
       case GuidanceMode.moreFrequent:
-        _instructionManager.repeatCooldown = const Duration(milliseconds: 1500);
+        guidanceCooldown = const Duration(milliseconds: 1500);
+        break;
+      case GuidanceMode.balanced:
+        guidanceCooldown = const Duration(milliseconds: 3000);
         break;
       case GuidanceMode.minimal:
-        _instructionManager.repeatCooldown = const Duration(milliseconds: 6000);
+        guidanceCooldown = const Duration(milliseconds: 6000);
         break;
     }
+    final Duration announcementCooldown = Duration(
+      seconds: s.announcementCooldownSeconds,
+    );
+    _instructionManager.repeatCooldown =
+        guidanceCooldown > announcementCooldown
+        ? guidanceCooldown
+        : announcementCooldown;
+    _instructionManager.repeatEnabled = s.repeatInstruction;
     final DepthAnalysisService? depth = _depthService;
     if (depth != null) {
       _depthStatusText = _depthStatusLabel(depth);
@@ -402,9 +421,9 @@ _voiceCommand.dispose();
   // TARGET OBJECT NAVIGATION
   // ------------------------------------------------------------
   //
-  // "Find a chair" arrives through the Visora assistant (speech or typed);
-  // this screen is the only place that owns the voice channel, so it speaks
-  // the target lines and repaints the small status chip over the preview.
+  // "Find a chair" arrives by press-and-hold (or typed); this screen is the
+  // only place that owns the voice channel, so it speaks the target lines and
+  // repaints the small status chip over the preview.
 
   void _onTargetNavigationChanged() {
     if (!mounted) return;
@@ -548,6 +567,13 @@ _voiceCommand.dispose();
   /// [_presentIntroCard] during the fade-out is never cancelled afterwards.
   void _dismissIntroCard() {
     if (!_showIntroCard) return;
+    // The card is removed in whenComplete, so the fade is load-bearing: it must
+    // still run (or be skipped outright) for the camera to be revealed. Reduced
+    // animations therefore skip the fade instead of muting its ticker.
+    if (!SettingsScope.of(context).animationsEnabled) {
+      setState(() => _showIntroCard = false);
+      return;
+    }
     _introController.reverse().whenComplete(() {
       // Only remove the card if no new appearance started while fading out.
       if (mounted && _showIntroCard) {
@@ -789,13 +815,16 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
       } else if (_voiceGuidance) {
         if (urgent) {
           // A safety warning must not wait behind a queued scene sentence.
+          _instructionManager.noteSpoken(<String>[nav.lastSpokenMessage]);
           _voiceService.speak(nav.lastSpokenMessage);
           nav.commitAnnouncement();
         } else {
           // Each object becomes its own queued sentence. The queue plays them
           // one at a time, so nothing is cut off and an unchanged scene cannot
           // pile up duplicates.
-          for (final String sentence in nav.pendingSentences) {
+          final List<String> sentences = nav.pendingSentences;
+          _instructionManager.noteSpoken(sentences);
+          for (final String sentence in sentences) {
             _voiceService.enqueueSpeech(sentence);
           }
           nav.commitAnnouncement();
@@ -1131,7 +1160,7 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
                   ),
                 ),
               ),
-              _visoraWebViewHost(),
+              _speechWebViewHost(),
               ],
             ),
           ),
@@ -1171,23 +1200,60 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
       _navState != _NavState.idle && _navState != _NavState.stopped;
 
   /// Route the recognized transcript. Target commands drive the target
-  /// navigator; anything else is left to the existing assistant behaviour.
+  /// navigator. Anything else falls through to the barge-in words below.
   ///
   /// The object announcements stay muted for as long as this takes, so the
   /// answer to the command is never buried under "Person detected." The target
   /// navigator takes over the mute on its own once a search starts.
-  Future<void> _onVoiceCommand(String transcript) async {
+  void _onVoiceCommand(String transcript) {
     _commandInFlight = true;
     _syncSceneVoiceSuppression();
     try {
       if (_targetNavigation.handleCommand(transcript)) return;
-      // Not a device command: hand it to the assistant exactly as the old
-      // microphone button did, so nothing that used to work is lost.
-      await VisoraSession.instance.handleUserMessage(transcript);
+      // Not a device command. "Stop." / "shut up." only mean "be quiet" when no
+      // target search is running; while one is active they belong to the target
+      // navigator above, so they never cancel a search by accident.
+      final String lower = transcript.trim().toLowerCase();
+      if (!_targetNavigation.isActive &&
+          (lower == 'stop' ||
+              lower == 'cancel' ||
+              lower == 'nevermind' ||
+              lower.contains('shut up'))) {
+        _voiceService.stop();
+        return;
+      }
+      // "Repeat that." re-announces the instruction the user just heard. The
+      // Repeat Last Instruction setting owns this: when it is off the request is
+      // silently declined rather than partially honoured.
+      if (_repeatRequested(lower)) {
+        // Repeat the sentences that were actually delivered, not the live
+        // scene: the current frame may describe something the cooldown
+        // suppressed, and replaying that would say something the user never
+        // heard.
+        if (_instructionManager.repeatLast() && _voiceGuidance) {
+          for (final String sentence in _instructionManager.lastSpokenSentences) {
+            _voiceService.enqueueSpeech(sentence);
+          }
+        } else {
+          _voiceService.enqueueSpeech('Repeat is turned off in Settings.');
+        }
+      }
     } finally {
       _commandInFlight = false;
       _syncSceneVoiceSuppression();
     }
+  }
+
+  /// Whether a transcript is a request to repeat the last instruction.
+  ///
+  /// Deliberately narrow: only phrases that clearly ask for a repeat, so an
+  /// ordinary scene sentence containing the word "again" cannot re-trigger it.
+  bool _repeatRequested(String lower) {
+    return lower == 'repeat' ||
+        lower == 'repeat that' ||
+        lower == 'say that again' ||
+        lower == 'repeat please' ||
+        lower == 'again please';
   }
 
   /// Speak the reason the hold produced nothing usable.
@@ -1199,10 +1265,10 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
     _voiceService.enqueueSpeech(message);
   }
 
-  /// Visora's hidden Google speech WebView: 1x1, no paint, no input. It must
-  /// stay mounted while this screen is open so the session's recognizer is
-  /// ready the moment the assistant overlay asks for the microphone.
-  Widget _visoraWebViewHost() {
+  /// The hidden Google speech WebView: 1x1, no paint, no input. It must stay
+  /// mounted while this screen is open so the recognizer is ready the moment a
+  /// press-and-hold command asks for the microphone.
+  Widget _speechWebViewHost() {
     // Widget tests set FLUTTER_TEST; the native InAppWebView has no platform
     // channel there, so skip hosting it (the recognizer is unused in tests).
     if (Platform.environment['FLUTTER_TEST'] != null) {
@@ -1214,7 +1280,7 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
       child: Opacity(
         opacity: 0,
         child: IgnorePointer(
-          child: ClipRect(child: VisoraSession.instance.webEngine.build()),
+          child: ClipRect(child: SpeechCaptureService.instance.webEngine.build()),
         ),
       ),
     );

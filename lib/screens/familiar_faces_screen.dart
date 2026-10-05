@@ -19,9 +19,9 @@ import '../utils/portrait_rgba.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/face_recognition_overlay.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/settings_scope.dart';
 import '../widgets/sos_gesture.dart';
 import '../widgets/sound_mode_button.dart';
-import '../widgets/visora/visora_overlay.dart';
 import 'face_registration_screen.dart';
 import 'registered_faces_screen.dart';
 
@@ -75,6 +75,11 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   // ------------------------------------------------------------
 
   bool _recognizing = false;
+
+  /// Whether the Familiar Face Recognition setting permits running the
+  /// recognition pipeline at all.
+  bool _recognitionAllowed = true;
+
   CameraService? _cameraService;
   CameraImage? _latestFrame;
   Timer? _pumpTimer;
@@ -166,13 +171,30 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   /// Applies persisted settings to this screen's live services.
   void _applySettings() {
     final s = SettingsService.instance;
-    _voiceEnabled = s.familiarFacesEnabled &&
-        s.familiarFaceVoice &&
-        s.voiceGuidanceEnabled &&
-        !s.globalVoiceMuted &&
-        !s.vibrateMode;
+    // Feature intent only. Global Voice Guidance / Global Voice Mute are enforced
+    // centrally by VoiceService and are deliberately not duplicated here.
+    _voiceEnabled =
+        s.familiarFacesEnabled && s.familiarFaceVoice && !s.vibrateMode;
+    // Familiar Face Recognition is described in Settings as turning the
+    // on-device recognition itself on or off, so it gates the pipeline rather
+    // than just the announcements. Without this the screen still recognised
+    // every face and drew the bounding boxes while the setting said off, which
+    // is both a privacy problem and a battery one.
+    _recognitionAllowed = s.familiarFacesEnabled;
     setState(() {});
     _voice.setEnabled(_voiceEnabled);
+    if (_recognizing && !_recognitionAllowed) {
+      _stopRecognition(
+        message: 'Familiar Face Recognition is turned off in Settings.',
+      );
+      // The voice is switched off by the line above, so state the reason on
+      // screen rather than speaking it.
+      if (mounted) {
+        setState(() {
+          _statusLine = 'Familiar Face Recognition is turned off in Settings.';
+        });
+      }
+    }
     _unknownEnabled = s.unknownPersonAnnouncements;
     _annMgr.unknownAnnouncements = _unknownEnabled;
     _annMgr.announceCooldown =
@@ -221,6 +243,13 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
 
   void _dismissIntroCard() {
     if (!_showTitleCard) return;
+    // The card is removed in whenComplete, so the fade is load-bearing. Reduced
+    // animations skip it outright rather than muting the ticker, which would
+    // leave the card stuck on screen.
+    if (!SettingsScope.of(context).animationsEnabled) {
+      setState(() => _showTitleCard = false);
+      return;
+    }
     _introController.reverse().whenComplete(() {
       // Only remove the card if no new appearance started while fading out.
       if (mounted && _showTitleCard) {
@@ -252,6 +281,15 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   Future<void> _startRecognition() async {
     print('FAMILIAR_FACES_START_PRESSED');
     if (_recognizing) return;
+    // Refuse before touching the camera rather than starting and immediately
+    // tearing down: turning the setting off must not leave the camera running.
+    if (!_recognitionAllowed) {
+      _dismissIntroCard();
+      setState(() {
+        _statusLine = 'Familiar Face Recognition is turned off in Settings.';
+      });
+      return;
+    }
     _dismissIntroCard();
     setState(() => _recognizing = true);
 
@@ -320,14 +358,14 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
     _showError(message);
   }
 
-  void _stopRecognition() {
+  void _stopRecognition({String? message}) {
     _shutdownPipeline();
     if (!mounted) return;
     setState(() {
       _recognizing = false;
       _waitingForCamera = true;
       _overlay = [];
-      _statusLine = 'Watching for known faces…';
+      _statusLine = message ?? 'Watching for known faces…';
       _statusName = '';
     });
     _presentIntroCard();
@@ -560,10 +598,6 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   // HEADER
   // ------------------------------------------------------------
 
-  Future<void> _openVisora() async {
-    if (!mounted) return;
-    await VisoraOverlay.show(context);
-  }
 
   Widget _buildHeader(bool compact) {
     return Padding(
@@ -602,16 +636,6 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
             ),
           ),
 
-          const SizedBox(width: 12),
-
-          // Visora AI assistant — first square, consistent on every screen.
-          _HeaderButton(
-            icon: Icons.auto_awesome_rounded,
-            label: 'Visora AI assistant',
-            onTap: () => unawaited(_openVisora()),
-          ),
-
-          const SizedBox(width: 10),
 
           // Ringer switch: sound -> vibrate -> muted.
           SoundModeButton(),
@@ -1083,50 +1107,6 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   }
 }
 
-// ============================================================
-// HEADER BUTTON
-// ============================================================
-
-class _HeaderButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _HeaderButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: label,
-      child: Material(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(13),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(13),
-          child: Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(13),
-              border: Border.all(color: const Color(0xFFE4E7EC)),
-            ),
-            child: Icon(
-              icon,
-              color: const Color(0xFF344054),
-              size: 21,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 // ============================================================
 // FAMILIAR FACES TITLE CARD

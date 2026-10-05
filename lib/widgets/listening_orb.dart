@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 
-/// Visora's visual identity: a glowing blue→purple orb.
+import 'settings_scope.dart';
+
+/// Visual identity of the listening surface: a glowing blue→purple orb.
 ///
 /// Rendered by [AnimationController]s so it is fully GPU-friendly and only
-/// animates while mounted. The orb supports the core assistant states and
-/// swaps its inner content (waveform-pulse vs mic icon) without leaving the
-/// shared visual language.
-class VisoraOrb extends StatefulWidget {
-  const VisoraOrb({
+/// animates while mounted. The orb swaps its inner content (waveform-pulse vs
+/// mic icon) without leaving the shared visual language.
+class ListeningOrb extends StatefulWidget {
+  const ListeningOrb({
     super.key,
     this.size = 148,
     this.listening = false,
@@ -23,10 +24,10 @@ class VisoraOrb extends StatefulWidget {
   final IconData micIcon;
 
   @override
-  State<VisoraOrb> createState() => _VisoraOrbState();
+  State<ListeningOrb> createState() => _ListeningOrbState();
 }
 
-class _VisoraOrbState extends State<VisoraOrb>
+class _ListeningOrbState extends State<ListeningOrb>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   late final Animation<double> _fade;
@@ -38,11 +39,31 @@ class _VisoraOrbState extends State<VisoraOrb>
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 3600),
-    )..repeat();
+    );
     _fade = CurvedAnimation(parent: _controller, curve: Curves.easeInOut);
     _pulse = Tween<double>(begin: 0.92, end: 1.08).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeInOutSine),
     );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncBreathing();
+  }
+
+  /// The breathing glow is purely decorative — it conveys no state and gates no
+  /// action — so it is safe to freeze when the user asked for reduced
+  /// animations. Re-checked on dependency change so the setting takes effect
+  /// immediately.
+  void _syncBreathing() {
+    if (SettingsScope.of(context).animationsEnabled) {
+      if (!_controller.isAnimating) _controller.repeat();
+    } else {
+      _controller
+        ..stop()
+        ..value = 0;
+    }
   }
 
   @override
@@ -137,7 +158,7 @@ class _VisoraOrbState extends State<VisoraOrb>
   }
 }
 
-/// Expanding concentric rings displayed while Visora listens.
+/// Expanding concentric rings displayed while the microphone is open.
 class _RippleRing extends StatelessWidget {
   const _RippleRing({required this.size, required this.controller});
 
@@ -215,17 +236,17 @@ class _InnerPulse extends StatelessWidget {
   }
 }
 
-/// A small horizontal equalizer icon used next to the Visora label.
-class VisoraMiniWaveform extends StatefulWidget {
-  const VisoraMiniWaveform({super.key, this.active = true});
+/// A small horizontal equalizer icon shown next to the listening label.
+class MiniWaveform extends StatefulWidget {
+  const MiniWaveform({super.key, this.active = true});
 
   final bool active;
 
   @override
-  State<VisoraMiniWaveform> createState() => _VisoraMiniWaveformState();
+  State<MiniWaveform> createState() => _MiniWaveformState();
 }
 
-class _VisoraMiniWaveformState extends State<VisoraMiniWaveform>
+class _MiniWaveformState extends State<MiniWaveform>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
@@ -236,17 +257,36 @@ class _VisoraMiniWaveformState extends State<VisoraMiniWaveform>
       vsync: this,
       duration: const Duration(milliseconds: 1400),
     );
-    if (widget.active) _controller.repeat();
   }
 
   @override
-  void didUpdateWidget(covariant VisoraMiniWaveform oldWidget) {
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncBars();
+  }
+
+  @override
+  void didUpdateWidget(covariant MiniWaveform oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.active && !_controller.isAnimating) {
-      _controller.repeat();
+    _syncBars();
+  }
+
+  /// The equalizer conveys that the mic is live, so it is never muted entirely —
+  /// when animations are reduced it parks on a still waveform instead of
+  /// stopping dead, preserving the same information without the motion.
+  void _syncBars() {
+    if (!widget.active) {
+      _controller
+        ..stop()
+        ..value = 0;
+      return;
     }
-    if (!widget.active && _controller.isAnimating) {
-      _controller.stop();
+    if (SettingsScope.of(context).animationsEnabled) {
+      if (!_controller.isAnimating) _controller.repeat();
+    } else {
+      _controller
+        ..stop()
+        ..value = 0.5;
     }
   }
 

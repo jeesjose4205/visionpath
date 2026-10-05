@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import 'visora/visora_session.dart';
+import 'speech_capture_service.dart';
 import 'voice_service.dart';
 
 /// Why the assistant is not currently able to listen.
@@ -17,9 +17,9 @@ enum VoiceCommandFailure {
 /// Owns the press-and-hold voice-command interaction.
 ///
 /// Holding the screen opens the one microphone the app already owns
-/// ([VisoraSession.startCapture]) and collects the words; releasing stops it and
-/// hands the transcript to the caller. Nothing is answered while the finger is
-/// still down, because the sentence is not finished yet.
+/// ([SpeechCaptureService.startCapture]) and collects the words; releasing stops
+/// it and hands the transcript to the caller. Nothing is answered while the
+/// finger is still down, because the sentence is not finished yet.
 ///
 /// Audio safety follows the spec's "safest behaviour": environmental speech that
 /// has not started yet is dropped, and a sentence already playing is allowed to
@@ -102,7 +102,7 @@ class VoiceCommandController extends ChangeNotifier {
     if (_disposed || !_holding) {
       // Released while we were waiting for the speaker.
       if (outcome == _OpenOutcome.opened) {
-        await VisoraSession.instance.stopCapture();
+        await SpeechCaptureService.instance.stopCapture();
       }
       return;
     }
@@ -128,7 +128,7 @@ class VoiceCommandController extends ChangeNotifier {
   /// Whether the last start failure was caused by microphone access rather
   /// than by a broken or busy recognizer.
   bool _isPermissionProblem() {
-    final String error = VisoraSession.instance.lastError.toLowerCase();
+    final String error = SpeechCaptureService.instance.lastError.toLowerCase();
     return error.contains('permission') || error.contains('microphone');
   }
 
@@ -156,11 +156,11 @@ class VoiceCommandController extends ChangeNotifier {
   }
 
   Future<_OpenOutcome> _openMicrophone() async {
-    final bool started = await VisoraSession.instance.startCapture();
+    final bool started = await SpeechCaptureService.instance.startCapture();
     if (!started) return _OpenOutcome.unavailable;
     if (_disposed || !_holding) {
       // The hold ended while the engine was starting.
-      await VisoraSession.instance.stopCapture();
+      await SpeechCaptureService.instance.stopCapture();
       return _OpenOutcome.abandoned;
     }
     _listening = true;
@@ -177,7 +177,7 @@ class VoiceCommandController extends ChangeNotifier {
     _listening = false;
     _notify();
 
-    final String words = await VisoraSession.instance.stopCapture();
+    final String words = await SpeechCaptureService.instance.stopCapture();
     _stopTranscriptMirror();
     if (_disposed) return;
 
@@ -202,15 +202,15 @@ class VoiceCommandController extends ChangeNotifier {
     _listening = false;
     _notify();
     _stopTranscriptMirror();
-    await VisoraSession.instance.stopCapture();
+    await SpeechCaptureService.instance.stopCapture();
   }
 
-  /// Mirrors the session's live partial words so the overlay can show them.
+  /// Mirrors the recognizer's live partial words so the overlay can show them.
   ///
-  /// The session notifies on every partial result, so the words appear as they
-  /// are spoken rather than only on release.
+  /// [SpeechCaptureService] notifies on every partial result, so the words
+  /// appear as they are spoken rather than only on release.
   void _syncTranscript() {
-    final String partial = VisoraSession.instance.capturedText;
+    final String partial = SpeechCaptureService.instance.capturedText;
     if (partial == _transcript) return;
     _transcript = partial;
     _notify();
@@ -220,12 +220,12 @@ class VoiceCommandController extends ChangeNotifier {
   void _onSessionChanged() => _syncTranscript();
 
   void _startTranscriptMirror() {
-    VisoraSession.instance.removeListener(_onSessionChanged);
-    VisoraSession.instance.addListener(_onSessionChanged);
+    SpeechCaptureService.instance.removeListener(_onSessionChanged);
+    SpeechCaptureService.instance.addListener(_onSessionChanged);
   }
 
   void _stopTranscriptMirror() {
-    VisoraSession.instance.removeListener(_onSessionChanged);
+    SpeechCaptureService.instance.removeListener(_onSessionChanged);
   }
 
   @visibleForTesting
@@ -252,7 +252,7 @@ class VoiceCommandController extends ChangeNotifier {
     _holding = false;
     _listening = false;
     _stopTranscriptMirror();
-    unawaited(VisoraSession.instance.stopCapture());
+    unawaited(SpeechCaptureService.instance.stopCapture());
     super.dispose();
   }
 

@@ -3,8 +3,8 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../models/detected_object.dart';
@@ -29,6 +29,7 @@ import '../utils/portrait_rgba.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/detection_overlay.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/settings_scope.dart';
 import '../widgets/sound_mode_button.dart';
 
 /// Look & Detect — a live, voice-first visual assistant integrated with the
@@ -104,13 +105,13 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
 
   void _applyVoiceSettings() {
     final s = SettingsService.instance;
-    final gate = s.voiceGuidanceEnabled &&
-        s.detectionVoiceEnabled &&
-        !s.globalVoiceMuted &&
-        !s.vibrateMode;
-    setState(() => _voiceEnabled = gate);
-    _voice.setEnabled(gate);
-    if (gate) {
+    // The global Voice Guidance / Global Voice Mute combination is enforced
+    // centrally by VoiceService, so it is not duplicated here. This screen only
+    // decides its own feature intent (detection voice, vibrate ringer).
+    final bool featureIntent = s.detectionVoiceEnabled && !s.vibrateMode;
+    setState(() => _voiceEnabled = featureIntent);
+    _voice.setEnabled(featureIntent);
+    if (featureIntent) {
       _voice.onSpeakCompleted = _onSpeakCompleted;
     }
     _familiarScan = s.familiarFacesEnabled;
@@ -223,7 +224,7 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
       });
       return;
     }
-    HapticFeedback.selectionClick();
+    VibrationService.instance.selectionClick();
     setState(() {});
   }
 
@@ -249,7 +250,7 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
   /// stops, it is not just hidden).
   Future<void> _toggleCamera() async {
     final next = !_cameraOn;
-    HapticFeedback.selectionClick();
+    VibrationService.instance.selectionClick();
     setState(() {
       _cameraOn = next;
       if (!next) _state = LiveAssistantState.idle;
@@ -284,7 +285,7 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
   /// Toggle continuous scene detection.
   Future<void> _toggleContinuous() async {
     final next = !_continuousDetect;
-    HapticFeedback.selectionClick();
+    VibrationService.instance.selectionClick();
     setState(() => _continuousDetect = next);
     if (next) {
       if (_cameraOn) {
@@ -449,7 +450,7 @@ class _LookAndDetectScreenState extends State<LookAndDetectScreen> {
 
   /// Big microphone button interaction.
   Future<void> _onMicTap() async {
-    HapticFeedback.mediumImpact();
+    VibrationService.instance.impactTap();
     switch (_state) {
       case LiveAssistantState.listening:
         await _voiceInput.cancel();
@@ -995,12 +996,20 @@ class _MicButtonState extends State<_MicButton>
   }
 
   void _syncAnimation() {
+    final SettingsScopeData scope = SettingsScope.of(context);
     switch (widget.state) {
       case LiveAssistantState.listening:
       case LiveAssistantState.speaking:
       case LiveAssistantState.processing:
-        if (!_pulse.isAnimating) {
-          _pulse.repeat();
+        // The pulse marks the mic as busy; it carries no state of its own, so
+        // it is decorative. Reduced animations park it on a static frame
+        // rather than removing the signal that the mic is active.
+        if (scope.animationsEnabled) {
+          if (!_pulse.isAnimating) _pulse.repeat();
+        } else {
+          _pulse
+            ..stop()
+            ..value = 0.5;
         }
         break;
       case LiveAssistantState.idle:

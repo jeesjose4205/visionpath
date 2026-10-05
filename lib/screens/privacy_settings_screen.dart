@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../services/settings_service.dart';
 import '../widgets/settings_widgets.dart';
@@ -77,7 +77,7 @@ class PrivacySettingsScreen extends StatelessWidget {
                       icon: Icons.delete_outline_rounded,
                       accent: settingsRed,
                       onTap: () {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         _showFaceDataDialog(context);
                       },
                     ),
@@ -93,7 +93,7 @@ class PrivacySettingsScreen extends StatelessWidget {
                   icon: Icons.delete_sweep_outlined,
                   destructive: true,
                   onTap: () {
-                    HapticFeedback.selectionClick();
+                    VibrationService.instance.selectionClick();
                     _confirmClearHistory(context, s);
                   },
                 ),

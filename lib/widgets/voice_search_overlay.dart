@@ -3,7 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../services/voice_command_controller.dart';
-import 'visora/visora_orb.dart';
+import 'listening_orb.dart';
 
 /// The transparent listening surface shown while the user presses and holds the
 /// navigation screen.
@@ -13,8 +13,8 @@ import 'visora/visora_orb.dart';
 /// animation, which matters because the user still needs to see where they are
 /// walking while they speak.
 ///
-/// The orb is the existing [VisoraOrb], so the listening animation is identical
-/// to the assistant overlay the user already knows.
+/// The orb is [ListeningOrb], the same listening animation the rest of the app
+/// already uses for its microphone surfaces.
 class VoiceSearchOverlay extends StatelessWidget {
   const VoiceSearchOverlay({
     super.key,
@@ -66,7 +66,7 @@ class VoiceSearchOverlay extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
-                    VisoraOrb(
+                    ListeningOrb(
                       size: 168,
                       listening: listening,
                       showMic: true,
@@ -120,7 +120,7 @@ class _StatusLine extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         if (listening) ...<Widget>[
-          const VisoraMiniWaveform(active: true),
+          const MiniWaveform(active: true),
           const SizedBox(width: 10),
         ],
         Text(

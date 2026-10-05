@@ -19,7 +19,6 @@ import '../widgets/camera_preview_fit.dart';
 import '../widgets/face_recognition_overlay.dart';
 import '../widgets/settings_button.dart';
 import '../widgets/sound_mode_button.dart';
-import '../widgets/visora/visora_overlay.dart';
 
 enum _RegStep { details, camera }
 
@@ -104,12 +103,13 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
 
   void _applyVoiceSettings() {
     final s = SettingsService.instance;
-    final enabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted && !s.vibrateMode;
+    // Global Voice Guidance / Global Voice Mute are enforced centrally by
+    // VoiceService, so only feature intent lives here.
+    final enabled = !s.vibrateMode;
     _voiceEnabled = enabled;
+    // Rate, volume and language are applied centrally by VoiceService from
+    // SettingsService; this screen only declares its own intent.
     _voice.setEnabled(enabled);
-    unawaited(_voice.setSpeechRate(s.speechRateValue));
-    unawaited(_voice.setVolume(s.voiceVolume));
-    unawaited(_voice.setLanguage(s.voiceLanguageTag));
     if (mounted) setState(() {});
   }
 
@@ -406,10 +406,6 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
     );
   }
 
-  Future<void> _openVisora() async {
-    if (!mounted) return;
-    await VisoraOverlay.show(context);
-  }
 
   Widget _buildHeader(bool compact) {
     return Padding(
@@ -447,11 +443,6 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
             ),
           ),
           const SizedBox(width: 12),
-          _HeaderButton(
-            icon: Icons.auto_awesome_rounded,
-            label: 'Visora AI assistant',
-            onTap: () => unawaited(_openVisora()),
-          ),
           const SizedBox(width: 10),
           // Ringer switch: sound -> vibrate -> muted.
           SoundModeButton(),

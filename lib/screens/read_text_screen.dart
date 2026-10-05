@@ -7,6 +7,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/app_settings.dart';
 import '../models/ocr_result.dart';
 import '../services/camera_service.dart';
 import '../services/ocr_service.dart';
@@ -17,9 +18,9 @@ import '../services/voice_service.dart';
 import '../widgets/ocr_result_card.dart';
 import '../widgets/read_text_controls.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/settings_scope.dart';
 import '../widgets/sos_gesture.dart';
 import '../widgets/sound_mode_button.dart';
-import '../widgets/visora/visora_overlay.dart';
 import '../widgets/text_camera_preview.dart';
 
 /// Read Text screen - voice-guided text reading assistant.
@@ -157,15 +158,21 @@ class _ReadTextScreenState extends State<ReadTextScreen>
 
   void _applySettings() {
     final s = SettingsService.instance;
-    // Vibrate mode silences reading like a phone ringer; the finished-read
-    // alert becomes a single vibration instead of "End of text.".
-    _voiceEnabled =
-        s.voiceGuidanceEnabled && !s.globalVoiceMuted && !s.vibrateMode;
+// Vibrate mode silences reading like a phone ringer; the finished-read
+    // alert becomes a single vibration instead of "End of text.". Global
+    // Voice Guidance / Global Voice Mute are applied centrally by VoiceService,
+    // so only feature intent lives here.
+    _voiceEnabled = !s.vibrateMode;
     setState(() {});
     _voice.setEnabled(_voiceEnabled);
-    unawaited(_voice.setSpeechRate(s.speechRateValue));
-    unawaited(_voice.setVolume(s.voiceVolume));
-    unawaited(_voice.setLanguage(s.voiceLanguageTag));
+    // Apply the OCR script here rather than at capture time: live guidance runs
+    // [OcrService.recognizeRgba] on every analysed frame, long before the user
+    // presses capture, so applying it only in [capture] left the live path on
+    // whatever script was previously active. Only Latin is offered in Settings,
+    // so this normally maps to the script already in use and is a no-op; it goes
+    // through [OcrService.setScript] so a future script addition has one place
+    // to take effect.
+    unawaited(_ocr.setScript(OcrService.scriptForSetting(s.ocrLanguage)));
   }
 
   @override
@@ -254,8 +261,14 @@ class _ReadTextScreenState extends State<ReadTextScreen>
       });
       _announceGuidance(guidance);
 
-      // Auto-capture once the frame is stable (assisted mode only).
+// Auto-capture once the frame is stable (assisted mode only).
+      //
+      // Automatic Text Reading is the setting that owns this behaviour. It is
+      // deliberately NOT the same thing as voice being on: the user may still
+      // want spoken position guidance and manual capture only. Manual capture
+      // ([_capture] from the button) is never blocked by this.
       if (guidance.phase == GuidancePhase.ready &&
+          SettingsService.instance.readTextAutoRead &&
           _voiceEnabled &&
           !_autoCaptureDone) {
         _autoCaptureDone = true;
@@ -352,7 +365,9 @@ class _ReadTextScreenState extends State<ReadTextScreen>
         _statusDetail = 'Recognizing text...';
       });
 
-      final OcrResult result = await _ocr.recognizePath(path);
+      // The script was applied in [_applySettings], which covers both the live
+    // frame path and this one.
+    final OcrResult result = await _ocr.recognizePath(path);
       if (!mounted) return;
 
       if (result.hasText) {
@@ -448,9 +463,19 @@ class _ReadTextScreenState extends State<ReadTextScreen>
       _statusDetail = 'Reading aloud...';
     });
 
-    final chunks = _chunkText(text);
+final chunks = _chunkText(text);
+    // Reading Speed applies to OCR read-aloud only. It is passed as a
+    // per-reading override, so changing it cannot alter the global Speech Rate
+    // that navigation and object announcements use.
+    final double readingRate = switch (
+        SettingsService.instance.readingSpeed) {
+      SpeechRate.slow => 0.35,
+      SpeechRate.normal => 0.5,
+      SpeechRate.fast => 0.75,
+    };
     await _voice.speakAllText(
       chunks,
+      speechRateOverride: readingRate,
       onDone: () {
         if (!mounted) return;
         setState(() {
@@ -553,6 +578,13 @@ class _ReadTextScreenState extends State<ReadTextScreen>
   /// during the fade-out is never cancelled afterwards.
   void _dismissIntroCard() {
     if (!_showIntroCard) return;
+    // The card is removed in whenComplete, so the fade is load-bearing. Reduced
+    // animations skip it outright rather than muting the ticker, which would
+    // leave the card stuck on screen.
+    if (!SettingsScope.of(context).animationsEnabled) {
+      setState(() => _showIntroCard = false);
+      return;
+    }
     _introController.reverse().whenComplete(() {
       if (mounted && _showIntroCard) {
         setState(() => _showIntroCard = false);
@@ -773,10 +805,6 @@ class _ReadTextScreenState extends State<ReadTextScreen>
     );
   }
 
-  Future<void> _openVisora() async {
-    if (!mounted) return;
-    await VisoraOverlay.show(context);
-  }
 
   Widget _buildHeader(bool compact) {
     return Padding(
@@ -815,16 +843,6 @@ class _ReadTextScreenState extends State<ReadTextScreen>
             ),
           ),
 
-          const SizedBox(width: 12),
-
-          // Visora AI assistant — first square, consistent on every screen.
-          _HeaderButton(
-            icon: Icons.auto_awesome_rounded,
-            label: 'Visora AI assistant',
-            onTap: () => unawaited(_openVisora()),
-          ),
-
-          const SizedBox(width: 10),
 
           // Ringer switch: sound -> vibrate -> muted.
           SoundModeButton(),
@@ -1136,53 +1154,6 @@ class _ReadTextScreenState extends State<ReadTextScreen>
           hasError: _phase == _ReadPhase.error,
         ),
       ],
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════
-// HEADER BUTTON
-// ═══════════════════════════════════════════════════════
-//
-// Visually identical to the Navigate screen header button.
-
-class _HeaderButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _HeaderButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: label,
-      child: Material(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(13),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(13),
-          child: Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(13),
-              border: Border.all(color: const Color(0xFFE4E7EC)),
-            ),
-            child: Icon(
-              icon,
-              color: const Color(0xFF344054),
-              size: 21,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

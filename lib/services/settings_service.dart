@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:ui' show Locale;
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../l10n/app_localizations.dart';
 import '../models/app_settings.dart';
 import 'vibration_service.dart';
 
@@ -32,6 +34,10 @@ class SettingsService extends ChangeNotifier {
   static const String _kHapticFeedback = 'setting.hapticFeedback';
   static const String _kVoiceFirstMode = 'setting.voiceFirstMode';
   static const String _kReduceAnimations = 'setting.reduceAnimations';
+
+  /// A removed setting, purged on load. Kept only so upgrades do not leave an
+  /// orphan preference behind; never written or read as a live setting.
+  static const String _legacySosConfirmation = 'setting.sosConfirmation';
   static const String _kNavVoice = 'setting.navVoice';
   static const String _kObstacleSensitivity = 'setting.obstacleSensitivity';
   static const String _kGuidanceMode = 'setting.guidanceMode';
@@ -58,7 +64,6 @@ class SettingsService extends ChangeNotifier {
   static const String _kFaceSensitivity = 'setting.faceSensitivity';
   static const String _kFaceCooldown = 'setting.faceCooldown';
   static const String _kSosHoldDuration = 'setting.sosHoldDuration';
-  static const String _kSosConfirmation = 'setting.sosConfirmation';
   static const String _kSosAlertSoundEnabled = 'setting.sosAlertSoundEnabled';
   static const String _kSosAlertTone = 'setting.sosAlertTone';
   static const String _kAppLanguage = 'setting.appLanguage';
@@ -144,6 +149,27 @@ class SettingsService extends ChangeNotifier {
   bool get hapticFeedback => _hapticFeedback;
   bool get voiceFirstMode => _voiceFirstMode;
   bool get reduceAnimations => _reduceAnimations;
+
+  /// Text scaling derived from [textSize].
+  ///
+  /// Read by `SettingsScope`, which installs it as the app-wide
+  /// `MediaQuery.textScaler`, so this is the single place the three levels are
+  /// defined and every screen picks the value up for free.
+  double get textScaleFactor {
+    switch (_textSize) {
+      case TextSizeLevel.standard:
+        return 1.0;
+      case TextSizeLevel.large:
+        return 1.2;
+      case TextSizeLevel.extraLarge:
+        return 1.5;
+    }
+  }
+
+  /// Control-size multiplier derived from [largeButtons].
+  ///
+  /// Read by `AppControlSizes`, which centralizes the actual pixel sizes.
+  double get controlScaleFactor => _largeButtons ? 1.3 : 1.0;
 
   // ---------------------------------------------------------------
   // Navigation
@@ -244,12 +270,10 @@ class SettingsService extends ChangeNotifier {
   // ---------------------------------------------------------------
 
   int _sosHoldDurationSeconds = 5;
-  bool _sosConfirmation = true;
   bool _sosAlertSoundEnabled = true;
   SosAlertTone _sosAlertTone = SosAlertTone.emergency;
 
   int get sosHoldDurationSeconds => _sosHoldDurationSeconds;
-  bool get sosConfirmation => _sosConfirmation;
 
   /// Whether SOS repeats an audible alert while it is active.
   ///
@@ -269,7 +293,31 @@ class SettingsService extends ChangeNotifier {
   String _appLanguage = 'en';
 
   AppThemePreference get theme => _theme;
+
+  /// Whether VisionPath is allowed to post non-emergency status notifications.
+  ///
+  /// The app ships no notification subsystem today, so nothing reads this yet;
+  /// the Settings screen says so plainly rather than implying notifications
+  /// exist. It is kept as a real, persisted gate so adding one is a data change:
+  /// a notification service consults this before posting anything.
+  ///
+  /// It never gates SOS. The emergency alert path deliberately does not read
+  /// this value at all, so turning notifications off cannot silence an
+  /// emergency.
   bool get notificationsEnabled => _notificationsEnabled;
+
+  /// The [Locale] the UI should render in.
+  ///
+  /// Derived from [appLanguage] and validated against the languages the app
+  /// actually ships translations for, so a persisted value the app cannot
+  /// honour degrades to English instead of producing a half-translated UI.
+  Locale get appLocale => AppLocalizations.localeFor(appLanguage);
+
+  /// The interface language tag.
+  ///
+  /// Only `en` is localized today. `AppLocalizations.localeFor` resolves it and
+  /// falls back to English for an unknown stored value, so a stale preference
+  /// can never leave the app without a locale.
   String get appLanguage => _appLanguage;
 
   // ---------------------------------------------------------------
@@ -350,13 +398,16 @@ class SettingsService extends ChangeNotifier {
             FamiliarFaceSensitivity.conservative;
     _familiarFaceCooldownSeconds = prefs.getInt(_kFaceCooldown) ?? 3;
     _sosHoldDurationSeconds = prefs.getInt(_kSosHoldDuration) ?? 5;
-    _sosConfirmation = prefs.getBool(_kSosConfirmation) ?? true;
     _sosAlertSoundEnabled = prefs.getBool(_kSosAlertSoundEnabled) ?? true;
     _sosAlertTone = SosAlertTone.fromName(prefs.getString(_kSosAlertTone));
     _appLanguage = prefs.getString(_kAppLanguage) ?? 'en';
     _theme = _enumFromName(AppThemePreference.values, prefs.getString(_kTheme)) ??
         AppThemePreference.system;
     _notificationsEnabled = prefs.getBool(_kNotifications) ?? true;
+    // The SOS Confirmation key had no UI and no consumer: the SOS button
+    // activates directly on the hold. Removing the value would leave a stale
+    // entry in SharedPreferences on every upgrade, so it is dropped here once.
+    prefs.remove(_legacySosConfirmation);
     _loaded = true;
     notifyListeners();
   }
@@ -523,9 +574,6 @@ class SettingsService extends ChangeNotifier {
 
   Future<void> setSosHoldDuration(int seconds) =>
       _write(_kSosHoldDuration, () => _sosHoldDurationSeconds = seconds, prefsInt: seconds);
-
-  Future<void> setSosConfirmation(bool v) =>
-      _write(_kSosConfirmation, () => _sosConfirmation = v, prefsBool: v);
 
   /// Turns the repeating SOS beep on or off without touching the call or SMS.
   Future<void> setSosAlertSoundEnabled(bool v) => _write(

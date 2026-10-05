@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
@@ -35,7 +35,7 @@ class DetectionSettingsScreen extends StatelessWidget {
                           'Speak detected objects and obstacles.',
                       value: s.detectionVoiceEnabled,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setDetectionVoiceEnabled(v);
                       },
                     ),
@@ -51,7 +51,7 @@ class DetectionSettingsScreen extends StatelessWidget {
                       description: 'Announce \u201cPerson ahead.\u201d',
                       value: s.peopleAnnouncements,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setPeopleAnnouncements(v);
                       },
                     ),
@@ -62,7 +62,7 @@ class DetectionSettingsScreen extends StatelessWidget {
                           'Announce cars and other vehicles.',
                       value: s.vehicleAnnouncements,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setVehicleAnnouncements(v);
                       },
                     ),
@@ -72,7 +72,7 @@ class DetectionSettingsScreen extends StatelessWidget {
                       description: 'Announce animals such as dogs and cats.',
                       value: s.animalAnnouncements,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setAnimalAnnouncements(v);
                       },
                     ),
@@ -84,7 +84,7 @@ class DetectionSettingsScreen extends StatelessWidget {
                           'and doors.',
                       value: s.furnitureAnnouncements,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setFurnitureAnnouncements(v);
                       },
                     ),
@@ -96,7 +96,7 @@ class DetectionSettingsScreen extends StatelessWidget {
                           'of you.',
                       value: s.obstacleAnnouncements,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setObstacleAnnouncements(v);
                       },
                     ),

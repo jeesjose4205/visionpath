@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../services/settings_service.dart';
 import '../widgets/settings_widgets.dart';
@@ -17,7 +17,9 @@ class NotificationsSettingsScreen extends StatelessWidget {
         final s = SettingsService.instance;
         return SettingsScaffold(
           title: 'Notifications',
-          subtitle: 'Status notifications from VisionPath AI.',
+          subtitle:
+              'Status notifications from VisionPath AI. Emergency alerts are '
+              'not affected.',
           body: ListView(
             padding: const EdgeInsets.only(bottom: 32),
             children: [
@@ -25,10 +27,14 @@ class NotificationsSettingsScreen extends StatelessWidget {
                 child: SettingsToggle(
                   title: 'Notifications',
                   description:
-                      'Allow VisionPath to show status notifications.',
+                      'Allow VisionPath to post non-emergency status '
+                      'notifications. VisionPath does not currently post any '
+                      'notifications of its own, so this preference changes '
+                      'nothing yet. The emergency SOS alert is separate and '
+                      'always works.',
                   value: s.notificationsEnabled,
                   onChanged: (v) {
-                    HapticFeedback.selectionClick();
+                    VibrationService.instance.selectionClick();
                     s.setNotificationsEnabled(v);
                   },
                 ),

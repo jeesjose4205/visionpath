@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
@@ -37,7 +37,7 @@ class EmergencySettingsScreen extends StatelessWidget {
                   icon: Icons.contacts_outlined,
                   accent: settingsRed,
                   onTap: () {
-                    HapticFeedback.selectionClick();
+                    VibrationService.instance.selectionClick();
                     Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -75,7 +75,7 @@ class EmergencySettingsScreen extends StatelessWidget {
                           'the message are sent either way.',
                       value: s.sosAlertSoundEnabled,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setSosAlertSoundEnabled(v);
                       },
                     ),
@@ -89,7 +89,7 @@ class EmergencySettingsScreen extends StatelessWidget {
                           (label: tone.label, value: tone.name),
                       ],
                       onSelected: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setSosAlertTone(SosAlertTone.fromName(v));
                       },
                     ),

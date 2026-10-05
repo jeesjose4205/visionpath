@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
@@ -39,7 +39,7 @@ class FamiliarFaceSettingsScreen extends StatelessWidget {
                           'face recognition model.',
                       value: s.familiarFacesEnabled,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setFamiliarFacesEnabled(v);
                       },
                     ),
@@ -51,7 +51,7 @@ class FamiliarFaceSettingsScreen extends StatelessWidget {
                           '\u201cSarah is ahead.\u201d',
                       value: s.familiarFaceVoice,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setFamiliarFaceVoice(v);
                       },
                     ),
@@ -63,7 +63,7 @@ class FamiliarFaceSettingsScreen extends StatelessWidget {
                           'default to avoid excessive speech.',
                       value: s.unknownPersonAnnouncements,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setUnknownPersonAnnouncements(v);
                       },
                     ),
@@ -117,7 +117,7 @@ class FamiliarFaceSettingsScreen extends StatelessWidget {
                   icon: Icons.manage_accounts_outlined,
                   accent: settingsBlue,
                   onTap: () {
-                    HapticFeedback.selectionClick();
+                    VibrationService.instance.selectionClick();
                     Navigator.push(
                       context,
                       MaterialPageRoute(

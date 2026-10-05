@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../screens/emergency_screen.dart';
 
@@ -328,7 +328,10 @@ class _SosGestureOverlayState extends State<SosGestureOverlay> {
     final navigator = widget.navigatorKey.currentState;
     if (navigator == null || widget.observer.emergencyOnTop) return;
 
-    HapticFeedback.heavyImpact();
+    // Confirms the deliberate three-finger SOS gesture, so it obeys the
+    // Haptic Feedback preference like every other UI action. The SOS alert
+    // itself is driven separately by SosService and is never gated by this.
+    VibrationService.instance.impactTap();
     navigator.push(
       PageRouteBuilder<void>(
         settings: const RouteSettings(name: kSosRouteName),

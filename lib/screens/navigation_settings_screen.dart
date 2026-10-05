@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
@@ -37,7 +37,7 @@ class NavigationSettingsScreen extends StatelessWidget {
                           '\u201cPath appears clear. Move forward.\u201d',
                       value: s.navigationVoiceEnabled,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setNavigationVoiceEnabled(v);
                       },
                     ),
@@ -58,7 +58,7 @@ class NavigationSettingsScreen extends StatelessWidget {
                           'distance.',
                       value: s.depthAnalysisEnabled,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setDepthAnalysisEnabled(v);
                       },
                     ),
@@ -71,7 +71,7 @@ class NavigationSettingsScreen extends StatelessWidget {
                           'preview. For troubleshooting only.',
                       value: s.depthDebugOverlay,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setDepthDebugOverlay(v);
                       },
                     ),
@@ -90,7 +90,7 @@ class NavigationSettingsScreen extends StatelessWidget {
                           'calibrated estimates, not exact measurements.',
                       value: s.metricDistanceEnabled,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setMetricDistanceEnabled(v);
                       },
                     ),
@@ -182,7 +182,7 @@ class NavigationSettingsScreen extends StatelessWidget {
                           'prioritized whenever this is on.',
                       value: s.closeObstacleWarnings,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setCloseObstacleWarnings(v);
                       },
                     ),

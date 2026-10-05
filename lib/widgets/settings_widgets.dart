@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
+import '../services/voice_service.dart';
+import 'settings_scope.dart';
 
 // VisionPath AI settings palette (matches the Home screen).
 const Color settingsInk = Color(0xFF15233D);
@@ -9,6 +11,26 @@ const Color settingsRed = Color(0xFFE63B3B);
 const Color settingsSubtext = Color(0xFF718096);
 const Color settingsBg = Color(0xFFF8FAFD);
 const Color settingsBorder = Color(0xFFE3E8EF);
+
+/// A VoiceService instance reserved for Voice-First Mode confirmations.
+///
+/// Deliberately separate from the feature screens' instances: a settings screen
+/// has no camera or navigation lifecycle of its own, and confirmations must keep
+/// working while the user is only tapping through Settings.
+final VoiceService _voiceFirstVoice = VoiceService()..setEnabled(true);
+
+/// Speaks a short confirmation of what just happened, for Voice-First Mode.
+///
+/// This is the minimum existing behaviour the setting describes: it reuses the
+/// app's existing [VoiceService] rather than adding a second speech path, and it
+/// is a no-op unless the user enabled Voice-First Mode *and* voice is actually
+/// permitted (Voice Guidance on, not globally muted). It never fires for
+/// emergency/SOS actions, which have their own dedicated announcements.
+void voiceFirstConfirm(BuildContext context, String message) {
+  if (!SettingsScope.of(context).voiceFirstMode) return;
+  if (!VoiceService.routineVoiceAllowed) return;
+  _voiceFirstVoice.speak(message);
+}
 
 /// Consistent settings-scaffold header.
 class SettingsScaffold extends StatelessWidget {
@@ -159,9 +181,13 @@ class SettingsToggle extends StatelessWidget {
         activeTrackColor: settingsBlue,
         onChanged: (next) {
           if (haptics) {
-            HapticFeedback.selectionClick();
+            VibrationService.instance.selectionClick();
           }
           onChanged(next);
+          voiceFirstConfirm(
+            context,
+            '$title ${next ? 'on' : 'off'}.',
+          );
         },
       ),
     );
@@ -237,7 +263,7 @@ class SettingsChoice extends StatelessWidget {
           color: settingsSubtext,
         ),
         onTap: () {
-          HapticFeedback.selectionClick();
+          VibrationService.instance.selectionClick();
           _showChoiceSheet(
             context,
             title: title,
@@ -298,6 +324,7 @@ class SettingsChoice extends StatelessWidget {
                   onTap: () {
                     Navigator.of(sheetContext).pop();
                     onSelected(choice.value);
+                    voiceFirstConfirm(context, '$title: ${choice.label}.');
                   },
                 ),
             ],

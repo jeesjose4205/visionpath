@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
@@ -36,7 +36,7 @@ class ReadTextSettingsScreen extends StatelessWidget {
                           'detected.',
                       value: s.readTextAutoRead,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setReadTextAutoRead(v);
                       },
                     ),
@@ -54,7 +54,7 @@ class ReadTextSettingsScreen extends StatelessWidget {
                           'and \u201cText is centered.\u201d while framing.',
                       value: s.textPositionGuidance,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setTextPositionGuidance(v);
                       },
                     ),
@@ -70,8 +70,10 @@ class ReadTextSettingsScreen extends StatelessWidget {
                       selected: _ocrLabel(s.ocrLanguage),
                       description:
                           'Language script used for text recognition. '
-                          'Unsupported scripts will be silently skipped '
-                          'by the recognition engine.',
+                          'Latin is the only script currently supported '
+                          'and verified, so it is the only option offered; '
+                          'other scripts are not silently ignored, they '
+                          'are simply not listed.',
                       choices: const [
                         (label: 'Latin (English, etc.)', value: 'latin'),
                       ],

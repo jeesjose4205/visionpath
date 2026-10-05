@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../services/settings_service.dart';
-import '../services/visora/visora_config.dart';
+
 import '../widgets/sound_mode_button.dart';
 import 'about_screen.dart';
 import 'accessibility_settings_screen.dart';
@@ -16,15 +16,6 @@ import 'privacy_settings_screen.dart';
 import 'read_text_settings_screen.dart';
 import 'reset_settings_screen.dart';
 import 'voice_settings_screen.dart';
-import 'visora_settings_screen.dart';
-
-/// Live "Visora AI" dashboard status. "Online" only after a verified
-/// successful backend response (see VisoraConfig.connectionVerified).
-String _visoraStatus(BuildContext context) {
-  final cfg = VisoraConfig.instance;
-  if (!cfg.hasBackend) return 'Offline';
-  return cfg.connectionVerified ? 'Online' : 'Ready';
-}
 
 /// SettingsScreen is the launcher for VisionPath AI configuration.
 ///
@@ -92,10 +83,7 @@ class SettingsScreen extends StatelessWidget {
             // ----------------------------------------------------------
             Expanded(
               child: ListenableBuilder(
-                listenable: Listenable.merge([
-                  SettingsService.instance,
-                  VisoraConfig.instance,
-                ]),
+                listenable: SettingsService.instance,
                 builder: (context, _) {
                   final s = SettingsService.instance;
                   return ListView(
@@ -105,16 +93,6 @@ class SettingsScreen extends StatelessWidget {
                       _GroupSection(
                         title: 'Voice & Interaction',
                         rows: [
-                          _SettingRow(
-                            icon: Icons.auto_awesome_rounded,
-                            accent: const Color(0xFF1459C7),
-                            bubble: const Color(0xFFE7F0FF),
-                            title: 'Visora AI',
-                            subtitle: 'Assistant, wake word and AI backend',
-                            semanticLabel: 'Visora AI settings',
-                            status: _visoraStatus(context),
-                            target: const VisoraSettingsScreen(),
-                          ),
                           _SettingRow(
                             icon: Icons.volume_up_rounded,
                             accent: const Color(0xFF1459C7),
@@ -337,7 +315,7 @@ class _SettingRow extends StatelessWidget {
       label: semanticLabel,
       child: InkWell(
         onTap: () {
-          HapticFeedback.selectionClick();
+          VibrationService.instance.selectionClick();
           Navigator.push(
             context,
             MaterialPageRoute<void>(builder: (_) => target),

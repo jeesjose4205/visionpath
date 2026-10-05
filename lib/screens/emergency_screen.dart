@@ -72,8 +72,17 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
 
   bool _voiceEnabled = true;
   _SosStatus _status = _SosStatus.ready;
-  int _holdSeconds = 5;
   int _countdown = 5;
+
+  /// The duration the current hold is running against.
+  ///
+  /// Deliberately read from [SosHoldController] rather than cached here: the
+  /// controller snapshots the setting once per hold, so if the user changes the
+  /// hold duration mid-hold the running countdown and the spoken cue both keep
+  /// referring to the duration that hold actually started with. A cached copy
+  /// here would have desynced the spoken "in N seconds" from the progress the
+  /// user is watching.
+  int get _holdSeconds => _hold.activeHoldSeconds;
 
   @override
   void initState() {
@@ -106,13 +115,19 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
 
   void _applySettings() {
     final s = SettingsService.instance;
-    _voiceEnabled = s.voiceGuidanceEnabled && !s.globalVoiceMuted && !s.vibrateMode;
-    _holdSeconds = s.sosHoldDurationSeconds;
-    _countdown = s.sosHoldDurationSeconds;
+    // Feature intent only: "this screen wants to speak". Rate, volume and
+    // language are applied centrally by VoiceService and are no longer set
+    // here. The voice-guidance/mute combination is kept as intent so the
+    // SOS status line keeps behaving exactly as before.
+    _voiceEnabled = s.voiceGuidanceEnabled &&
+        !s.globalVoiceMuted &&
+        !s.vibrateMode;
+    // Only re-seed the idle countdown when no hold is in flight; resetting it
+    // mid-hold would jump the number back while the timer kept running.
+    if (!_hold.isCountdown && !_hold.isActivated) {
+      _countdown = s.sosHoldDurationSeconds;
+    }
     _voice.setEnabled(_voiceEnabled);
-    unawaited(_voice.setSpeechRate(s.speechRateValue));
-    unawaited(_voice.setVolume(s.voiceVolume));
-    unawaited(_voice.setLanguage(s.voiceLanguageTag));
     if (mounted) setState(() {});
   }
 
@@ -146,6 +161,9 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
       _countdown = remaining;
     });
     if (remaining == _holdSeconds) {
+      // The first tick is the whole duration, so it gets the full sentence;
+      // subsequent ticks are just the number, which is faster to understand
+      // mid-countdown.
       _voice.speak('Emergency activation in $_holdSeconds seconds.');
     } else {
       _voice.speak(_numberWords[remaining] ?? '$remaining');

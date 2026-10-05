@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
@@ -51,7 +51,7 @@ class AccessibilitySettingsScreen extends StatelessWidget {
                           'buttons and status indicators.',
                       value: s.highContrast,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setHighContrast(v);
                       },
                     ),
@@ -63,7 +63,7 @@ class AccessibilitySettingsScreen extends StatelessWidget {
                           'across the app.',
                       value: s.largeButtons,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setLargeButtons(v);
                       },
                     ),
@@ -81,7 +81,7 @@ class AccessibilitySettingsScreen extends StatelessWidget {
                           'activation, scan start/complete and SOS.',
                       value: s.hapticFeedback,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setHapticFeedback(v);
                       },
                     ),
@@ -89,11 +89,14 @@ class AccessibilitySettingsScreen extends StatelessWidget {
                     SettingsToggle(
                       title: 'Voice-First Mode',
                       description:
-                          'Prioritize spoken information for important '
-                          'controls. Touch interaction still works normally.',
+                          'Speak a confirmation when an important control is '
+                          'used, so you can tell what happened without '
+                          'looking. Touch interaction still works normally, '
+                          'and this adds no voice of its own when Voice '
+                          'Guidance is off.',
                       value: s.voiceFirstMode,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setVoiceFirstMode(v);
                       },
                     ),
@@ -105,7 +108,7 @@ class AccessibilitySettingsScreen extends StatelessWidget {
                           'experience.',
                       value: s.reduceAnimations,
                       onChanged: (v) {
-                        HapticFeedback.selectionClick();
+                        VibrationService.instance.selectionClick();
                         s.setReduceAnimations(v);
                       },
                     ),

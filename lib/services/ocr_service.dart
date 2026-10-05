@@ -29,22 +29,65 @@ class OcrService {
   bool _isActive = false;
   bool _closed = false;
 
+  /// The script the current recognizer was built with.
+  ///
+  /// Tracked so a language change can rebuild the recognizer instead of
+  /// silently continuing with the previous script, which would make the
+  /// setting look connected while doing nothing.
+  TextRecognitionScript? _recognizerScript;
+
   /// Guards the per-analysis guidance log so it prints at most ~once a
   /// second instead of once per recognized frame.
   int _lastGuidanceLogAt = 0;
 
   bool get isActive => _isActive;
 
+  /// The script currently in use, or Latin before the first recognition.
+  TextRecognitionScript get script => _recognizerScript ?? TextRecognitionScript.latin;
+
+  /// Switch the recognition script.
+  ///
+  /// Returns true when the script actually changed. A no-op change does not
+  /// tear the recognizer down, so re-selecting the same language is free.
+  /// The next recognition rebuilds the recognizer with [script].
+  Future<bool> setScript(TextRecognitionScript script) async {
+    if (_recognizerScript == script) return false;
+    _recognizerScript = script;
+    await close();
+    return true;
+  }
+
+  /// The scripts this app actually supports.
+  ///
+  /// Latin is the only one the Settings screen offers, because it is the only
+  /// one the app has verified end to end. The map exists so adding another
+  /// script later is a data change rather than a code change — and so the
+  /// stored setting can be validated against reality instead of being trusted.
+  static const Map<String, TextRecognitionScript> supportedScripts =
+      <String, TextRecognitionScript>{
+    'latin': TextRecognitionScript.latin,
+  };
+
+  /// Maps a persisted `ocrLanguage` value onto a real ML Kit script.
+  ///
+  /// An unknown or unsupported stored value falls back to Latin rather than
+  /// failing, so a corrupted preference can never make OCR unusable.
+  static TextRecognitionScript scriptForSetting(String value) {
+    return supportedScripts[value] ?? TextRecognitionScript.latin;
+  }
+
   Future<TextRecognizer> _ensureRecognizer() async {
-    if (_recognizer != null) return _recognizer!;
-    if (_closed) {
-      final fresh = TextRecognizer(script: TextRecognitionScript.latin);
-      _recognizer = fresh;
-      _closed = false;
-      return fresh;
+    final TextRecognitionScript script =
+        _recognizerScript ?? TextRecognitionScript.latin;
+    // A closed recognizer must be rebuilt even if one is still referenced, and
+    // a script change invalidates the existing recognizer.
+    if (_recognizer != null && !_closed && _recognizerScript == script) {
+      return _recognizer!;
     }
-    print('OCR_INIT_START');
-    _recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    print('OCR_INIT_START script=${script.name}');
+    _recognizer = TextRecognizer(script: script);
+    _recognizerScript = script;
+    _closed = false;
     _isActive = true;
     print('OCR_INIT_DONE');
     return _recognizer!;

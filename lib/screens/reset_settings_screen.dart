@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../services/settings_service.dart';
 import '../widgets/settings_widgets.dart';
@@ -31,7 +31,7 @@ class ResetSettingsScreen extends StatelessWidget {
               icon: Icons.restart_alt_rounded,
               destructive: true,
               onTap: () {
-                HapticFeedback.selectionClick();
+                VibrationService.instance.selectionClick();
                 _confirmReset(context);
               },
             ),

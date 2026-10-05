@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
@@ -32,7 +32,10 @@ class GeneralSettingsScreen extends StatelessWidget {
                   title: 'App Language',
                   selected: _languageLabel(s.appLanguage),
                   description:
-                      'Language of the app interface where supported.',
+                      'Language of the app interface. English is currently '
+                      'the only localized language, so it is the only option '
+                      'offered. Emergency and SOS wording is never machine '
+                      'translated.',
                   choices: const [
                     (label: 'English', value: 'en'),
                   ],
@@ -66,10 +69,13 @@ class GeneralSettingsScreen extends StatelessWidget {
                 child: SettingsToggle(
                   title: 'Notifications',
                   description:
-                      'Allow VisionPath to show status notifications.',
+                      'Allow VisionPath to post non-emergency status '
+                      'notifications. VisionPath does not currently post any, '
+                      'so turning this off changes nothing yet. The emergency '
+                      'SOS alert always works and is never affected.',
                   value: s.notificationsEnabled,
                   onChanged: (v) {
-                    HapticFeedback.selectionClick();
+                    VibrationService.instance.selectionClick();
                     s.setNotificationsEnabled(v);
                   },
                 ),
@@ -84,7 +90,7 @@ class GeneralSettingsScreen extends StatelessWidget {
                   icon: Icons.restart_alt_rounded,
                   destructive: true,
                   onTap: () {
-                    HapticFeedback.selectionClick();
+                    VibrationService.instance.selectionClick();
                     _confirmReset(context, s);
                   },
                 ),
@@ -97,7 +103,7 @@ class GeneralSettingsScreen extends StatelessWidget {
                   icon: Icons.info_outline_rounded,
                   accent: settingsBlue,
                   onTap: () {
-                    HapticFeedback.selectionClick();
+                    VibrationService.instance.selectionClick();
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const AboutScreen()),

@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../services/voice_command_controller.dart';
 
@@ -84,7 +84,7 @@ class _PressAndHoldVoiceRegionState extends State<PressAndHoldVoiceRegion> {
     _holdTimer = null;
     if (!mounted || !widget.enabled) return;
     unawaited(widget.controller.beginHold());
-    HapticFeedback.mediumImpact();
+    VibrationService.instance.impactTap();
   }
 
   void _onPointerUp(PointerEvent event) {

@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/vibration_service.dart';
 
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
@@ -36,11 +36,10 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
   }
 
   void _onSettingsChanged() {
-    final s = SettingsService.instance;
-    _voice.setEnabled(s.voiceGuidanceEnabled && !s.globalVoiceMuted);
-    unawaited(_voice.setSpeechRate(s.speechRateValue));
-    unawaited(_voice.setVolume(s.voiceVolume));
-    unawaited(_voice.setLanguage(s.voiceLanguageTag));
+    // The Test Voice button wants to speak regardless of feature toggles, so it
+    // only follows the global mute. Speech rate / volume / language are applied
+    // centrally by VoiceService, which is already bound to SettingsService.
+    _voice.setEnabled(!SettingsService.instance.globalVoiceMuted);
   }
 
   @override
@@ -147,7 +146,7 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
                   label: 'Test Voice',
                   icon: Icons.volume_up_outlined,
                   onTap: () {
-                    HapticFeedback.selectionClick();
+                    VibrationService.instance.selectionClick();
                     _voice.speak(
                       'This is VisionPath speaking. You can see beyond, '
                       'together.',

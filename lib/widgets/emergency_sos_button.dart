@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../services/settings_service.dart';
+import 'settings_scope.dart';
+
 /// Visual phases of the SOS hold.
 enum SosHoldPhase { ready, countdown, activated }
 
@@ -34,8 +37,19 @@ class SosHoldController extends ChangeNotifier {
   /// Fired when the user resets an activation.
   final VoidCallback? onReset;
 
-  /// Existing SOS hold duration.
-  static const int holdSeconds = 5;
+  /// The SOS hold duration in seconds.
+  ///
+  /// This is the single source of truth for every part of the hold: the
+  /// countdown the user sees, the progress ring, the activation threshold and
+  /// the spoken "activation in N seconds" cue all derive from this value, so
+  /// the screen can never claim a duration different from the one enforced.
+  ///
+  /// It is read live from [SettingsService] rather than hardcoded, which means
+  /// changing the setting takes effect on the very next hold without a restart.
+  static int get holdSeconds {
+    final int seconds = SettingsService.instance.sosHoldDurationSeconds;
+    return seconds > 0 ? seconds : 5;
+  }
 
   /// Travel beyond which the hold counts as abandoned.
   ///
@@ -57,19 +71,34 @@ class SosHoldController extends ChangeNotifier {
   int? _pointer;
   Offset? _origin;
   SosHoldPhase _phase = SosHoldPhase.ready;
-  int _remaining = holdSeconds;
+
+  /// The duration snapshotted when this particular hold began.
+  ///
+  /// Reading the setting on every tick would let a mid-hold change produce an
+  /// incoherent countdown (the ring and the timer disagreeing), so the value is
+  /// captured once per hold. It still comes from [holdSeconds], so it is the
+  /// setting and nothing else.
+  int _holdSeconds = 0;
 
   SosHoldPhase get phase => _phase;
   int get secondsRemaining => _remaining;
+
+  /// The duration this hold is being measured against.
+  int get activeHoldSeconds => _holdSeconds > 0 ? _holdSeconds : holdSeconds;
+
   bool get isCountdown => _phase == SosHoldPhase.countdown;
   bool get isActivated => _phase == SosHoldPhase.activated;
 
   /// 0..1 fill for the progress ring.
-  double get progress => switch (_phase) {
-    SosHoldPhase.ready => 0.0,
-    SosHoldPhase.countdown => (holdSeconds - _remaining) / holdSeconds,
-    SosHoldPhase.activated => 1.0,
-  };
+  double get progress {
+    if (_phase == SosHoldPhase.activated) return 1.0;
+    if (_phase != SosHoldPhase.countdown) return 0.0;
+    final int total = activeHoldSeconds;
+    if (total <= 0) return 0.0;
+    return (total - _remaining).clamp(0, total) / total;
+  }
+
+  int _remaining = 0;
 
   void pointerDown(PointerDownEvent event) {
     // One finger owns the hold. A second finger must not restart the countdown
@@ -129,8 +158,11 @@ class SosHoldController extends ChangeNotifier {
 
   void _startCountdown() {
     if (_phase != SosHoldPhase.ready) return;
+    // Snapshot the configured duration for this hold and start counting from it.
+    _holdSeconds = holdSeconds;
+    _remaining = _holdSeconds;
     _setPhase(SosHoldPhase.countdown);
-    onTick?.call(holdSeconds);
+    onTick?.call(_holdSeconds);
     _timer = Timer.periodic(const Duration(seconds: 1), (Timer timer) {
       final int next = _remaining - 1;
       if (next <= 0) {
@@ -163,8 +195,11 @@ class SosHoldController extends ChangeNotifier {
 
   void _setPhase(SosHoldPhase phase) {
     _phase = phase;
-    _remaining = phase == SosHoldPhase.ready ? holdSeconds : _remaining;
-    if (phase == SosHoldPhase.activated) _remaining = 0;
+    _remaining = phase == SosHoldPhase.activated
+        ? 0
+        : phase == SosHoldPhase.ready
+        ? activeHoldSeconds
+        : _remaining;
     notifyListeners();
   }
 
@@ -221,7 +256,26 @@ class _EmergencySOSButtonState extends State<EmergencySOSButton>
       vsync: this,
       duration: const Duration(milliseconds: 850),
     );
-    _pulse.repeat(reverse: true);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncPulse();
+  }
+
+  /// The pulse is decorative only: it never gates a state change, so it is safe
+  /// to stop when the user asked for reduced animations. Re-evaluated on every
+  /// dependency change so toggling the setting takes effect immediately rather
+  /// than only for the next SOS button that is built.
+  void _syncPulse() {
+    if (SettingsScope.of(context).animationsEnabled) {
+      if (!_pulse.isAnimating) _pulse.repeat(reverse: true);
+    } else {
+      _pulse
+        ..stop()
+        ..value = 0;
+    }
   }
 
   @override
@@ -251,11 +305,12 @@ class _EmergencySOSButtonState extends State<EmergencySOSButton>
         final bool isActivated = _hold.isActivated;
         final double progress = _hold.progress;
 
+        final int holdSeconds = _hold.activeHoldSeconds;
         final label = isActivated
             ? 'SOS Activated'
             : isCountdown
             ? 'Keep holding... releasing cancels'
-            : 'Press & hold for ${SosHoldController.holdSeconds} seconds';
+            : 'Press & hold for $holdSeconds seconds';
         final labelColor =
             isActivated ? _mainRed : isCountdown ? _amber : _ink;
 
@@ -271,7 +326,7 @@ class _EmergencySOSButtonState extends State<EmergencySOSButton>
               label: isActivated
                   ? 'SOS activated. Tap reset to return to ready.'
                   : 'SOS button. Press and hold for '
-                        '${SosHoldController.holdSeconds} seconds to activate.',
+                        '$holdSeconds seconds to activate.',
               toggled: isActivated,
               button: true,
               child: Transform.scale(
@@ -391,10 +446,19 @@ class _EmergencySOSButtonState extends State<EmergencySOSButton>
               ),
             );
 
+            // The hero control is a major action, so it follows the centralized Large
+            // Buttons sizing instead of a hardcoded diameter.
+            final AppControlSizes controls = AppControlSizes.of(context);
+            final double heroSize = controls.heroButton;
+
             return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                circle,
+                SizedBox(
+                  width: heroSize,
+                  height: heroSize,
+                  child: FittedBox(fit: BoxFit.contain, child: circle),
+                ),
                 const SizedBox(height: 14),
                 Text(
                   label,

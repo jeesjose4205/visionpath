@@ -70,6 +70,56 @@ class VibrationService {
     unawaited(Vibration.cancel().catchError((Object _) {}));
   }
 
+  /// A lightweight UI confirmation tap.
+  ///
+  /// This is the single replacement for direct `HapticFeedback.selectionClick()`
+  /// calls: UI actions route here, this reads [SettingsService.hapticFeedback],
+  /// and an accessibility user who turned haptics off actually gets silence.
+  /// Use it for ordinary interactive feedback (taps, toggles, selections).
+  void selectionClick() {
+    if (!_allowed) return;
+    if (_selectionHook != null) {
+      _selectionHook!();
+      return;
+    }
+    stopVibration();
+    _emitSelectionTap();
+  }
+
+  static Future<void> _emitSelectionTap() async {
+    try {
+      await HapticFeedback.selectionClick();
+    } on Object {
+      // Some devices/emulators have no haptic hardware; UI feedback is never
+      // essential enough to be worth surfacing an error for.
+    }
+  }
+
+  /// A slightly stronger tap for significant actions (opening a screen,
+  /// triggering a capture) where [selectionClick] would feel too subtle.
+  void impactTap() {
+    if (!_allowed) return;
+    if (_impactHook != null) {
+      _impactHook!();
+      return;
+    }
+    stopVibration();
+    unawaited(
+      HapticFeedback.mediumImpact().catchError((Object _) {}),
+    );
+  }
+
+  /// Test hooks for the lightweight UI taps, mirroring [debugPulse].
+  @visibleForTesting
+  static void Function()? debugSelectionClick;
+
+  @visibleForTesting
+  static void Function()? debugImpact;
+
+  static void Function()? get _selectionHook => debugSelectionClick;
+
+  static void Function()? get _impactHook => debugImpact;
+
   /// READ TEXT: a single short pulse.
   void vibrateOnce() {
     if (!_allowed) return;
