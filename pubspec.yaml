@@ -46,4 +46,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/ml/mobilefacenet.tflite
+    - assets/ml/arcface_w600k_mbf.tflite
     - assets/models/vosk-model-small-en-us-0.15.zip

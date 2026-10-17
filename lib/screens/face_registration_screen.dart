@@ -45,7 +45,7 @@ class FaceRegistrationScreen extends StatefulWidget {
 }
 
 class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
-  static const int _targetSamples = 4;
+  static const int _targetSamples = 12;
   static const Color _green = Color(0xFF1E8E3E);
 
   final VoiceService _voice = VoiceService();
@@ -80,6 +80,11 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
   CameraImage? _latestFrame;
   DetectedFace? _currentFace;
   final List<List<double>> _samples = [];
+  /// Which embedder the collected samples came from, locked on the first
+  /// successful capture so the enrollment is never a mix of two feature
+  /// spaces (ArcFace 512-d vs geometric 30-d).
+  bool? _useArcFaceForEnrollment;
+  String? _enrollmentModelId;
   bool _capturingSample = false;
   bool _busyFrame = false;
 
@@ -194,8 +199,10 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
       _latestFrame = null;
       _guide.reset();
       _samples.clear();
+      _useArcFaceForEnrollment = null;
+      _enrollmentModelId = null;
       _pumpTimer?.cancel();
-      _pumpTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      _pumpTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
         if (_busyFrame || _finishing || !mounted) return;
         final frame = _latestFrame;
         if (frame == null) return;
@@ -266,8 +273,11 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
     if (!mounted) return;
 
     final face = _pickBestFace(faces);
+    print('FACE_REG_PICKED: ' + (face != null ? 'yes' : 'no'));
+    if (face != null) { print('FACE_REG_PICKED_DETAIL: w=' + face.width.toStringAsFixed(3) + ' h=' + face.height.toStringAsFixed(3) + ' cx=' + face.centerX.toStringAsFixed(3) + ' cy=' + face.centerY.toStringAsFixed(3) + ' yaw=' + face.yawDegrees.toStringAsFixed(1) + ' roll=' + face.rollDegrees.toStringAsFixed(1) + ' upright=' + face.isUpright.toString()); }
     final guide = _guide.update(face: face, currentSample: _samples.length);
     _latestGuidance = guide;
+    print('FACE_REG_GUIDE: usable=' + guide.faceUsable.toString() + ' stage=' + guide.stage.toString());
 
     if (guide.faceUsable && !_finishing && !_capturingSample) {
       _captureSample(converted.rgba, converted.width, converted.height, face!);
@@ -282,7 +292,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
 
   DetectedFace? _pickBestFace(List<DetectedFace> faces) {
     DetectedFace? best;
-    for (final f in faces) {
+        print('FACE_REG_DET_COUNT:' + faces.length.toString());     for (final f in faces) {
       if (!f.isUpright) continue;
       if (best == null || f.width * f.height > best.width * best.height) {
         best = f;
@@ -297,25 +307,35 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
     int height,
     DetectedFace face,
   ) async {
-    _capturingSample = true;
+    _capturingSample = true; print('FACE_REG_CAPTURE_START');
     try {
-      // Primary: MobileFaceNet embedding (learned model). Fall back to the
-      // geometric recognizer only if the model isn't ready yet.
-      List<double> embedding;
-      if (FaceEmbeddingService.instance.isReady) {
-        final ml = await FaceEmbeddingService.instance.embeddingFor(
+      // Primary: ArcFace embedding (learned model). Fall back to the geometric
+      // recognizer only if the model isn't ready. The mode is locked after the
+      // first sample so all templates share one feature space.
+      final useArcFace = _useArcFaceForEnrollment ??
+          FaceEmbeddingService.instance.isReady;
+      List<double>? embedding;
+      if (useArcFace) {
+        print('FACE_REG_USING_ARCFACE');
+        embedding = await FaceEmbeddingService.instance.embeddingFor(
           rgba,
           width,
           height,
           face,
         );
-        if (ml == null) return;
-        embedding = ml;
+        if (embedding == null) {
+          print('FACE_REG_CAPTURE: arcface embedding null, skipping sample');
+          return;
+        }
       } else {
-        final geo = _recognition.generateEmbedding(face);
-        if (geo == null) return;
-        embedding = geo;
+        embedding = _recognition.generateEmbedding(face);
+        if (embedding == null) {
+          print('FACE_REG_CAPTURE: geo embedding null');
+          return;
+        }
       }
+      _useArcFaceForEnrollment = useArcFace;
+      _enrollmentModelId = useArcFace ? FaceEmbeddingService.modelId : null;
 
       _samples.add(embedding);
       // Reset the steadiness window so the next capture requires the person
@@ -351,8 +371,10 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
       name: name,
       relationship: rel.isEmpty ? null : rel,
       samples: _samples,
+      model: _enrollmentModelId,
     );
-    print('FACE_REG_COMPLETE: $name');
+    print('FACE_REG_COMPLETE: $name samples=${_samples.length} '
+        'model=${_enrollmentModelId ?? "geometric"}');
     _voice.stop();
     _vocals('Face registration complete.');
     await Future<void>.delayed(const Duration(milliseconds: 1500));

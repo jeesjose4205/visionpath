@@ -17,7 +17,7 @@ import '../models/familiar_face.dart';
   ///  A. Interior landmark positions (nose / mouth / ear relative to eye midpoint)
   ///  B. Distances and ratios between landmarks (mouth width, nose-to-chin, etc.)
   ///  C. Face-shape features (cheek-to-cheek width, face box width & height
-  ///     versus interocular) — the strongest discriminators between people.
+  ///     versus interocular) - the strongest discriminators between people.
   ///  D. Vertical face features (nose-to-lower-lip height, lip-to-chin height).
   ///
   /// Matching uses cosine similarity against the stored representative
@@ -34,7 +34,7 @@ class FaceRecognitionService {
   /// verification, same-person under landmark noise scores 0.99+ and under
   /// 12 deg roll ~0.91, while a genuinely different face scores ~0.92;
   /// 0.95 sits between those so a good match is accepted and a stranger or a
-  /// strong head tilt reports "unknown" (a safe failure — we prefer a
+  /// strong head tilt reports "unknown" (a safe failure - we prefer a
   /// false-unknown over a false-match).
   static const double defaultThreshold = 0.95;
   static const int _dimensions = 32;
@@ -107,7 +107,7 @@ class FaceRecognitionService {
     // [20..25] face-shape features: face-box width/height vs I, cheek width,
     //           cheek asymmetry, nose-to-lower-lip height, lip-to-chin height.
     // [26..29] contour-shape features derived from the dense face outline
-    //           (jaw/forehead widths, face height) — the strongest
+    //           (jaw/forehead widths, face height) - the strongest
     //           face-shape discriminators between different people.
     final contour = aligned.faceContour;
     final bool hasContour = contour.length >= 5;
@@ -210,29 +210,25 @@ class FaceRecognitionService {
     List<FamiliarFace> people,
   ) {
     if (people.isEmpty) return const FaceRecognitionResult.unknown();
-
-    double bestSim = -1;
-    FamiliarFace? best;
+    double bestSim = -1; double secondSim = -1; FamiliarFace? best;
     for (final person in people) {
-      final sim = cosineSimilarity(embedding, person.embedding);
-      print('FACE_DETECT_SIM ${person.name}: ${(sim * 100).toStringAsFixed(1)}%');
-      if (sim > bestSim) {
-        bestSim = sim;
-        best = person;
+      if (person.embedding.isNotEmpty && person.embedding.length == embedding.length) {
+        final sim = cosineSimilarity(embedding, person.embedding);
+        if (sim > bestSim) { secondSim = bestSim; bestSim = sim; best = person; } else if (sim > secondSim) { secondSim = sim; }
+      }
+      if (person.templates != null) {
+        for (final t in person.templates!) {
+          if (t.length != embedding.length) continue;
+          final sim = cosineSimilarity(embedding, t);
+          if (sim > bestSim) { secondSim = bestSim; bestSim = sim; best = person; } else if (sim > secondSim) { secondSim = sim; }
+        }
       }
     }
-    print('FACE_DETECT_SIM best: ${(bestSim * 100).toStringAsFixed(1)}% '
-        'threshold: ${(similarityThreshold * 100).toStringAsFixed(1)}%');
-    if (best == null || bestSim < similarityThreshold) {
-      return const FaceRecognitionResult.unknown();
-    }
-    return FaceRecognitionResult.known(
-      personId: best.id,
-      personName: best.name,
-      similarity: bestSim,
-    );
+    if (best == null || bestSim < similarityThreshold) return const FaceRecognitionResult.unknown();
+    final margin = secondSim < 0 ? 1.0 : bestSim - secondSim;
+    if (margin < 0.05) return const FaceRecognitionResult.unknown();
+    return FaceRecognitionResult.known(personId: best.id, personName: best.name, similarity: bestSim);
   }
-
   /// Cosine similarity between two L2-normalized embeddings (0..1).
   double cosineSimilarity(List<double> a, List<double> b) {
     if (a.isEmpty || b.isEmpty || a.length != b.length) return 0;

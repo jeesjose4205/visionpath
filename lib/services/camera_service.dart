@@ -27,7 +27,7 @@ class CameraService with ChangeNotifier {
   bool _isImageStreamActive = false;
 
   // Frame throttling (~5 FPS sampling for inference)
-  final int _targetFps = 5;
+  final int _targetFps = 10;
   int _lastFrameTime = 0;
   int _framesReceived = 0;
   int _lastFrameLogAt = 0;

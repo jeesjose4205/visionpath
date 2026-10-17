@@ -43,7 +43,7 @@ class RegistrationGuidance {
 /// registered embedding benefits from small real variations, matching the
 /// feature's multi-sample requirement.
 class FaceRegistrationGuide {
-  FaceRegistrationGuide({this.sampleCount = 4, this.steadyFramesRequired = 3});
+  FaceRegistrationGuide({this.sampleCount = 4, this.steadyFramesRequired = 2});
 
   /// Number of samples to capture per person.
   final int sampleCount;
@@ -104,7 +104,7 @@ class FaceRegistrationGuide {
     final cx = face.centerX;
     final cy = face.centerY;
 
-    if (w < _minWidth || h < _minHeight) {
+    if (w < _minWidth || h < _minHeight) { print('GUIDE: too far w=' + w.toStringAsFixed(3) + ' h=' + h.toStringAsFixed(3));
       _steadyCount = 0;
       _prevCx = -1;
       return const RegistrationGuidance(
@@ -114,7 +114,7 @@ class FaceRegistrationGuide {
         faceUsable: false,
       );
     }
-    if (w > _maxWidth || h > _maxHeight) {
+    if (w > _maxWidth || h > _maxHeight) { print('GUIDE: too close');
       _steadyCount = 0;
       _prevCx = -1;
       return const RegistrationGuidance(
@@ -124,7 +124,7 @@ class FaceRegistrationGuide {
         faceUsable: false,
       );
     }
-    if (cx < _centerLoX) {
+    if (cx < _centerLoX) { print('GUIDE: too right cx=' + cx.toStringAsFixed(3));
       _steadyCount = 0;
       _prevCx = -1;
       return const RegistrationGuidance(
@@ -134,7 +134,7 @@ class FaceRegistrationGuide {
         faceUsable: false,
       );
     }
-    if (cx > _centerHiX) {
+    if (cx > _centerHiX) { print('GUIDE: too left cx=' + cx.toStringAsFixed(3));
       _steadyCount = 0;
       _prevCx = -1;
       return const RegistrationGuidance(
@@ -173,7 +173,7 @@ class FaceRegistrationGuide {
     _prevCx = cx;
     _prevCy = cy;
 
-    if (moved) {
+    if (moved) { print('GUIDE: moved, resetting steady');
       _steadyCount = 0;
       return const RegistrationGuidance(
         stage: RegistrationStage.moving,
@@ -183,7 +183,7 @@ class FaceRegistrationGuide {
       );
     }
 
-    _steadyCount++;
+    _steadyCount++; print('GUIDE: steadyCount=' + _steadyCount.toString() + '/' + steadyFramesRequired.toString());
     if (_steadyCount >= steadyFramesRequired) {
       return RegistrationGuidance(
         stage: RegistrationStage.holdSteady,

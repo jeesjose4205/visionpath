@@ -143,12 +143,12 @@ void _applyVoiceSettings() {
     relCtrl.dispose();
 
     if (!mounted) return;
-    final updated = await service.updatePerson(
+    await service.updatePerson(
       person.id,
       name: newName,
       relationship: newRel.isEmpty ? null : newRel,
     );
-    if (updated && mounted) {
+    if (mounted) {
       _speak('$newName updated.');
     }
   }

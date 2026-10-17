@@ -87,7 +87,7 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
 
   // Latest frame results for the overlay + status.
   List<FaceOverlayEntry> _overlay = [];
-  String _statusLine = 'Watching for known faces…';
+  String _statusLine = 'Watching for known faces\u2026';
   String _statusName = '';
   bool _waitingForCamera = true;
 
@@ -142,6 +142,9 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   void initState() {
     super.initState();
     _faceService = context.read<FamiliarFaceService>();
+    // The ArcFace embedder must be ready before recognition can identify people;
+    // it is warmed up centrally at app start, but ensure it on entry too.
+    unawaited(FaceEmbeddingService.instance.ensureLoaded());
     _applySettings();
     SettingsService.instance.addListener(_applySettings);
     // The registry is provided and pre-loaded by the app; load if not ready.
@@ -327,7 +330,7 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
     setState(() {
       _waitingForCamera = false;
       _overlay = [];
-      _statusLine = 'Watching for known faces…';
+      _statusLine = 'Watching for known faces\u2026';
       _statusName = '';
     });
 
@@ -351,7 +354,7 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
       _recognizing = false;
       _waitingForCamera = true;
       _overlay = [];
-      _statusLine = 'Watching for known faces…';
+      _statusLine = 'Watching for known faces\u2026';
       _statusName = '';
     });
     _presentIntroCard();
@@ -365,7 +368,7 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
       _recognizing = false;
       _waitingForCamera = true;
       _overlay = [];
-      _statusLine = message ?? 'Watching for known faces…';
+      _statusLine = message ?? 'Watching for known faces\u2026';
       _statusName = '';
     });
     _presentIntroCard();
@@ -391,7 +394,7 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
     final people = _faceService.people;
     final occurrences = <FaceOccurrence>[];
     final overlayEntries = <FaceOverlayEntry>[];
-    String status = 'Watching for known faces…';
+    String status = 'Watching for known faces\u2026';
     String name = '';
 
     for (final face in faces) {
@@ -399,46 +402,44 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
         continue;
       }
 
-      // Primary: MobileFaceNet embedding (learned, far more discriminative).
+      // Primary: ArcFace embedding (learned, far more discriminative).
       FaceRecognitionResult match;
       if (FaceEmbeddingService.instance.isReady) {
-        final mlEmb = await FaceEmbeddingService.instance.embeddingFor(
-          converted.rgba,
-          converted.width,
-          converted.height,
-          face,
-        );
-        if (mlEmb == null) continue;
-        final ml = FaceEmbeddingService.instance.identify(
-          mlEmb,
-          people,
-          threshold: _mlThreshold,
-        );
-        match = ml == null
-            ? const FaceRecognitionResult.unknown()
-            : FaceRecognitionResult.known(
-                personId: ml.person.id,
-                personName: ml.person.name,
-                similarity: ml.similarity,
-              );
-      } else {
-        // Fallback: geometric recognizer (only matches when both the probe
-        // and the stored record are geometric; handles mixed-storage).
-        final emb = _recognition.generateEmbedding(face);
-        if (emb == null) continue;
-        match = _recognition.identify(emb, people);
-      }
+          final mlEmb = await FaceEmbeddingService.instance.embeddingFor(
+            converted.rgba,
+            converted.width,
+            converted.height,
+            face,
+          );
+          if (mlEmb == null) continue;
+          final ml = FaceEmbeddingService.instance.identify(
+            mlEmb,
+            people,
+            threshold: _mlThreshold,
+          );
+          match = ml == null
+              ? const FaceRecognitionResult.unknown()
+              : FaceRecognitionResult.known(
+                  personId: ml.person.id,
+                  personName: ml.person.name,
+                  similarity: ml.similarity,
+                );
+        } else {
+          final emb = _recognition.generateEmbedding(face);
+          if (emb == null) continue;
+          match = _recognition.identify(emb, people);
+        }
 
-      final occ = FaceOccurrence(
-        identityKey: match.personId ?? 'UNKNOWN',
-        name: match.personName,
-        position: face.position,
-        similarity: match.similarity,
-        isUnknown: !match.isKnown,
-        cx: face.centerX,
-        cy: face.centerY,
-      );
-      occurrences.add(occ);
+        final occ = FaceOccurrence(
+          identityKey: match.personId ?? 'UNKNOWN',
+          name: match.personName,
+          position: face.position,
+          similarity: match.similarity,
+          isUnknown: !match.isKnown,
+          cx: face.centerX,
+          cy: face.centerY,
+        );
+        occurrences.add(occ);
 
       overlayEntries.add(
         FaceOverlayEntry(
@@ -713,7 +714,7 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
                       const SizedBox(height: 12),
                       Text(
                         _waitingForCamera
-                            ? 'Starting camera…'
+                            ? 'Starting camera\u2026'
                             : _statusLine,
                         style: const TextStyle(
                           color: Colors.white60,
