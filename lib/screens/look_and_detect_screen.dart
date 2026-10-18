@@ -1173,97 +1173,99 @@ class _OptionsSheetState extends State<_OptionsSheet> {
   Widget build(BuildContext context) {
     final s = widget.screen;
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Center(
-              child: Text(
-                'Look & Detect',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 17,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            const Center(
-              child: Text(
-                'VisionPath AI Beta',
-                style: TextStyle(
-                  color: Color(0xFF7C8798),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            _optionTile(
-              icon: Icons.keyboard_rounded,
-              title: 'Ask a question by typing',
-              onTap: () {
-                Navigator.of(context).pop();
-                s._openAskSheet();
-              },
-            ),
-            _optionSwitch(
-              icon: Icons.center_focus_strong_rounded,
-              title: 'Continuous detection',
-              value: _continuous,
-              onChanged: (v) {
-                setState(() => _continuous = v);
-                s._toggleContinuous();
-              },
-            ),
-            _optionSwitch(
-              icon: Icons.videocam_rounded,
-              title: 'Camera',
-              value: _camera,
-              onChanged: (v) {
-                setState(() => _camera = v);
-                s._toggleCamera();
-              },
-            ),
-            _optionSwitch(
-              icon: Icons.volume_up_rounded,
-              title: 'Voice',
-              value: !SettingsService.instance.globalVoiceMuted,
-              onChanged: (v) {
-                SettingsService.instance.setGlobalVoiceMuted(!v);
-              },
-            ),
-            if (s._faceService?.people.isNotEmpty ?? false)
-              _optionSwitch(
-                icon: Icons.face_retouching_natural_rounded,
-                title: 'Recognize familiar faces',
-                value: _familiar,
-                onChanged: (v) => setState(() {
-                  _familiar = v;
-                  s._familiarScan = v;
-                }),
-              ),
-            const SizedBox(height: 8),
-            const Row(
-              children: [
-                Icon(Icons.lock_outline_rounded,
-                    size: 14, color: Color(0xFF7C8798)),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Video and detections stay on this device. Voice questions are recognized offline or by Google\u2019s speech service when online.',
-                    style: TextStyle(
-                      color: Color(0xFF7C8798),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Center(
+                child: Text(
+                  'Look & Detect',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-              ],
-            ),
-          ],
+              ),
+              const SizedBox(height: 4),
+              const Center(
+                child: Text(
+                  'VisionPath AI Beta',
+                  style: TextStyle(
+                    color: Color(0xFF7C8798),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _optionTile(
+                icon: Icons.keyboard_rounded,
+                title: 'Ask a question by typing',
+                onTap: () {
+                  Navigator.of(context).pop();
+                  s._openAskSheet();
+                },
+              ),
+              _optionSwitch(
+                icon: Icons.center_focus_strong_rounded,
+                title: 'Continuous detection',
+                value: _continuous,
+                onChanged: (v) {
+                  setState(() => _continuous = v);
+                  s._toggleContinuous();
+                },
+              ),
+              _optionSwitch(
+                icon: Icons.videocam_rounded,
+                title: 'Camera',
+                value: _camera,
+                onChanged: (v) {
+                  setState(() => _camera = v);
+                  s._toggleCamera();
+                },
+              ),
+              _optionSwitch(
+                icon: Icons.volume_up_rounded,
+                title: 'Voice',
+                value: !SettingsService.instance.globalVoiceMuted,
+                onChanged: (v) {
+                  SettingsService.instance.setGlobalVoiceMuted(!v);
+                },
+              ),
+              if (s._faceService?.people.isNotEmpty ?? false)
+                _optionSwitch(
+                  icon: Icons.face_retouching_natural_rounded,
+                  title: 'Recognize familiar faces',
+                  value: _familiar,
+                  onChanged: (v) => setState(() {
+                    _familiar = v;
+                    s._familiarScan = v;
+                  }),
+                ),
+              const SizedBox(height: 8),
+              const Row(
+                children: [
+                  Icon(Icons.lock_outline_rounded,
+                      size: 14, color: Color(0xFF7C8798)),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Video and detections stay on this device. Voice questions are recognized offline or by Google\u2019s speech service when online.',
+                      style: TextStyle(
+                        color: Color(0xFF7C8798),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1366,75 +1368,77 @@ class _AskSheetState extends State<_AskSheet> {
         top: 18,
         bottom: MediaQuery.of(context).viewInsets.bottom + 16,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Ask the assistant',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(height: 5),
-          const Text(
-            'Type a question about what the camera sees, or pick a quick question.',
-            style: TextStyle(
-              color: Color(0xFF7C8798),
-              fontSize: 12.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 14),
-          TextField(
-            controller: _controller,
-            focusNode: _focusNode,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white),
-            textInputAction: TextInputAction.done,
-            onSubmitted: _submit,
-            decoration: InputDecoration(
-              hintText: 'e.g. What do you see? Find a chair.',
-              hintStyle: const TextStyle(color: Color(0xFF5C6775)),
-              filled: true,
-              fillColor: const Color(0x26FFFFFF),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: const BorderSide(color: Color(0xFF1769E0)),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: BorderSide.none,
-              ),
-              suffixIcon: IconButton(
-                icon: const Icon(Icons.arrow_forward_rounded,
-                    color: Color(0xFF9FC6FF)),
-                onPressed: () => _submit(_controller.text),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Ask the assistant',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
               ),
             ),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final q in _quick)
-                ActionChip(
-                  label: Text(q.label),
-                  onPressed: () => _submit(q.query),
-                  backgroundColor: const Color(0x26FFFFFF),
-                  side: const BorderSide(color: Color(0x334369FF)),
-                  labelStyle: const TextStyle(
-                    color: Color(0xFF9FC6FF),
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12.5,
-                  ),
+            const SizedBox(height: 5),
+            const Text(
+              'Type a question about what the camera sees, or pick a quick question.',
+              style: TextStyle(
+                color: Color(0xFF7C8798),
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _controller,
+              focusNode: _focusNode,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white),
+              textInputAction: TextInputAction.done,
+              onSubmitted: _submit,
+              decoration: InputDecoration(
+                hintText: 'e.g. What do you see? Find a chair.',
+                hintStyle: const TextStyle(color: Color(0xFF5C6775)),
+                filled: true,
+                fillColor: const Color(0x26FFFFFF),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: const BorderSide(color: Color(0xFF1769E0)),
                 ),
-            ],
-          ),
-        ],
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: BorderSide.none,
+                ),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.arrow_forward_rounded,
+                      color: Color(0xFF9FC6FF)),
+                  onPressed: () => _submit(_controller.text),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final q in _quick)
+                  ActionChip(
+                    label: Text(q.label),
+                    onPressed: () => _submit(q.query),
+                    backgroundColor: const Color(0x26FFFFFF),
+                    side: const BorderSide(color: Color(0x334369FF)),
+                    labelStyle: const TextStyle(
+                      color: Color(0xFF9FC6FF),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12.5,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -315,6 +315,12 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFD),
+      // This screen has no text fields of its own, and its layout is a
+      // fixed-height Column sized to the full viewport. Letting the soft
+      // keyboard resize the body would shrink it below the fixed content and
+      // cause a bottom overflow while a dialog on top of it opens the
+      // keyboard, so keep the body at full height.
+      resizeToAvoidBottomInset: false,
       // Swallowing the SOS screen's own horizontal drags guarantees no other
       // screen can ever open by swiping from here; leave it with the back
       // button and the system back gesture, which pop to the previous screen.
@@ -349,13 +355,13 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                   if (n > 0) {
                     while (true) {
                       final budget =
-                          height - 60 - 66 - _contactsHeight(cardH, n);
+                          height - 60 - 76 - _contactsHeight(cardH, n);
                       if (budget >= 130 || cardH <= 32) break;
                       cardH -= 2;
                     }
                   }
                   final contactsBlock = _contactsHeight(cardH, n);
-                  var sosH = height - 60 - 66 - contactsBlock;
+                  var sosH = height - 60 - 76 - contactsBlock;
                   // The live status needs more vertical room than the idle
                   // button, but only while SOS is actually running.
                   final double cap = _sos.session.canReset ? 460 : 360;
@@ -962,41 +968,46 @@ class _ContactFormDialogState extends State<ContactFormDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _nameController,
-            autofocus: true,
-            textInputAction: TextInputAction.next,
-            decoration: InputDecoration(
-              labelText: 'Name',
-              hintText: 'e.g. Mom',
-              errorText: _nameError,
-              border: const OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _phoneController,
-            keyboardType: TextInputType.phone,
-            textInputAction: TextInputAction.done,
-            inputFormatters: [
-              FilteringTextInputFormatter.allow(
-                RegExp(r'[0-9+\-() ]'),
+      // The dialog grows taller than the space left above the keyboard on
+      // short screens, so let the fields scroll inside the dialog when they
+      // no longer fit. When there is room this looks exactly as before.
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              autofocus: true,
+              textInputAction: TextInputAction.next,
+              decoration: InputDecoration(
+                labelText: 'Name',
+                hintText: 'e.g. Mom',
+                errorText: _nameError,
+                border: const OutlineInputBorder(),
               ),
-              LengthLimitingTextInputFormatter(20),
-            ],
-            onSubmitted: (_) => _submit(),
-            decoration: InputDecoration(
-              labelText: 'Phone number',
-              hintText: 'e.g. +1 555 123 4567',
-              errorText: _phoneError,
-              helperText: '8-15 digits',
-              border: const OutlineInputBorder(),
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            TextField(
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
+              textInputAction: TextInputAction.done,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(
+                  RegExp(r'[0-9+\-() ]'),
+                ),
+                LengthLimitingTextInputFormatter(20),
+              ],
+              onSubmitted: (_) => _submit(),
+              decoration: InputDecoration(
+                labelText: 'Phone number',
+                hintText: 'e.g. +1 555 123 4567',
+                errorText: _phoneError,
+                helperText: '8-15 digits',
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
       ),
       actions: [
         TextButton(
