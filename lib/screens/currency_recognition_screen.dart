@@ -694,11 +694,6 @@ class _CurrencyRecognitionScreenState extends State<CurrencyRecognitionScreen>
                                         busy: _scanInProgress,
                                         onStart: _startScan,
                                         onRetry: _retry,
-                                        mode: _mode,
-                                        onModeChanged: _setMode,
-                                        banknoteAvailable:
-                                            _service.hasBanknoteModel,
-                                        coinAvailable: _service.hasCoinModel,
                                       ),
                                   ],
                                 ),
@@ -707,9 +702,14 @@ class _CurrencyRecognitionScreenState extends State<CurrencyRecognitionScreen>
                             SizedBox(height: compact ? 8 : 12),
                             _buildStatusCard(compact),
                             SizedBox(height: compact ? 8 : 12),
-                            _buildResultCard(compact),
+                            _buildNextActionCard(compact),
                             SizedBox(height: compact ? 8 : 12),
-                            _buildControls(compact),
+                            _buildStartScanningButton(compact),
+                            if (_phase == _CurrencyPhase.identified &&
+                                _result != null) ...<Widget>[
+                              SizedBox(height: compact ? 8 : 12),
+                              _buildResultCard(compact),
+                            ],
                           ],
                         ),
                       ),
@@ -770,51 +770,46 @@ class _CurrencyRecognitionScreenState extends State<CurrencyRecognitionScreen>
   Widget _buildHeader(bool compact) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
-        compact ? 6 : 10,
-        compact ? 6 : 10,
+        compact ? 12 : 18,
+        compact ? 8 : 14,
         compact ? 12 : 18,
         4,
       ),
       child: Row(
         children: <Widget>[
-          Semantics(
-            button: true,
-            label: 'Back',
-            child: IconButton(
-              onPressed: () => Navigator.of(context).maybePop(),
-              icon: const Icon(Icons.arrow_back_rounded),
-              color: const Color(0xFF182230),
-              tooltip: 'Back',
-            ),
-          ),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Semantics(
-                  header: true,
-                  child: const Text(
-                    'Currency Recognition',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color: Color(0xFF182230),
+            child: Semantics(
+              header: true,
+              label: 'VisionPath AI',
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: 'VisionPath ',
+                      style: TextStyle(
+                        fontSize: compact ? 20 : 22,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.2,
+                        color: const Color(0xFF182230),
+                      ),
                     ),
-                  ),
+                    TextSpan(
+                      text: 'AI',
+                      style: TextStyle(
+                        fontSize: compact ? 20 : 22,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.2,
+                        color: const Color(0xFF1769E0),
+                      ),
+                    ),
+                  ],
                 ),
-                const Text(
-                  'Identify Indian banknotes',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 12, color: Color(0xFF667085)),
-                ),
-              ],
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 12),
           SoundModeButton(),
           const SizedBox(width: 10),
           const SettingsButton(),
@@ -1143,92 +1138,123 @@ class _CurrencyRecognitionScreenState extends State<CurrencyRecognitionScreen>
   // ------------------------------------------------------------
 
   Widget _buildControls(bool compact) {
-    final bool showPrimary = _phase != _CurrencyPhase.initializing;
-    final bool canRepeat =
-        _phase == _CurrencyPhase.identified && _result != null;
+    return const SizedBox.shrink();
+  }
 
-    final String primaryLabel;
-    final IconData primaryIcon;
-    final VoidCallback? primaryAction;
-    if (_phase == _CurrencyPhase.error) {
-      primaryLabel = _permissionDenied ? 'ALLOW CAMERA & RETRY' : 'RETRY';
-      primaryIcon = Icons.refresh_rounded;
-      primaryAction = _retry;
-    } else if (_phase == _CurrencyPhase.ready) {
-      primaryLabel = 'START SCANNING';
-      primaryIcon = Icons.camera_alt_outlined;
-      primaryAction = _startScan;
-    } else if (_phase == _CurrencyPhase.identified ||
-        _phase == _CurrencyPhase.uncertain) {
-      primaryLabel = 'SCAN AGAIN';
-      primaryIcon = Icons.refresh_rounded;
-      primaryAction = _scanAgain;
-    } else {
-      primaryLabel = _paused ? 'RESUME' : 'PAUSE';
-      primaryIcon = _paused ? Icons.play_arrow_rounded : Icons.pause_rounded;
-      primaryAction = _togglePause;
-    }
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        if (showPrimary)
-          Semantics(
-            button: true,
-            label: primaryLabel,
-            child: SizedBox(
-              width: double.infinity,
-              height: compact ? 54 : 60,
-              child: ElevatedButton.icon(
-                onPressed: primaryAction,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1769E0),
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                ),
-                icon: Icon(primaryIcon, size: 22),
-                label: Text(
-                  primaryLabel,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
+  Widget _buildNextActionCard(bool compact) {
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(compact ? 14 : 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEEF4FF),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFD9E5FF)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: compact ? 44 : 50,
+            height: compact ? 44 : 50,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(
+              Icons.camera_alt_outlined,
+              color: const Color(0xFF175CD3),
+              size: compact ? 24 : 27,
             ),
           ),
-        if (canRepeat) ...<Widget>[
-          SizedBox(height: compact ? 8 : 10),
-          Semantics(
-            button: true,
-            label: 'Repeat result',
-            child: SizedBox(
-              width: double.infinity,
-              height: 46,
-              child: OutlinedButton.icon(
-                onPressed: _repeatResult,
-                icon: const Icon(Icons.volume_up_outlined, size: 20),
-                label: const Text(
-                  'REPEAT',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFF1769E0),
-                  backgroundColor: const Color(0xFFEFF5FF),
-                  side: const BorderSide(color: Color(0xFFB9D2F7)),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(15),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'NEXT ACTION',
+                  style: TextStyle(
+                    fontSize: compact ? 10 : 11,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF667085),
+                    letterSpacing: 0.7,
                   ),
                 ),
-              ),
+                const SizedBox(height: 4),
+                Text(
+                  _phase == _CurrencyPhase.scanning
+                      ? 'Scanning in progress'
+                      : (_phase == _CurrencyPhase.ready
+                          ? 'Press START SCANNING'
+                          : (_phase == _CurrencyPhase.identified
+                              ? 'Scan another note'
+                              : (_phase == _CurrencyPhase.uncertain
+                                  ? 'Adjust position and continue'
+                                  : (_phase == _CurrencyPhase.error
+                                      ? (_permissionDenied
+                                          ? 'Allow camera access and retry'
+                                          : 'Retry scanning')
+                                      : 'Preparing camera...')))),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: compact ? 15 : 17,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF182230),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
-      ],
+      ),
+    );
+  }
+
+  Widget _buildStartScanningButton(bool compact) {
+    String label;
+    VoidCallback? action;
+    if (_phase == _CurrencyPhase.error) {
+      label = _permissionDenied ? 'ALLOW CAMERA & RETRY' : 'RETRY';
+      action = _retry;
+    } else if (_phase == _CurrencyPhase.ready) {
+      label = 'START SCANNING';
+      action = _startScan;
+    } else if (_phase == _CurrencyPhase.scanning) {
+      label = _paused ? 'RESUME' : 'PAUSE';
+      action = _togglePause;
+    } else if (_phase == _CurrencyPhase.identified ||
+        _phase == _CurrencyPhase.uncertain) {
+      label = 'SCAN AGAIN';
+      action = _scanAgain;
+    } else {
+      label = 'START SCANNING';
+      action = null;
+    }
+
+    return SizedBox(
+      width: double.infinity,
+      height: compact ? 54 : 60,
+      child: ElevatedButton.icon(
+        onPressed: action,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFF1769E0),
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: const Color(0xFFCBD5E1),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+        ),
+        icon: const Icon(Icons.camera_alt_outlined, size: 22),
+        label: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1281,10 +1307,6 @@ class _CurrencyIntroCard extends StatelessWidget {
     required this.available,
     required this.busy,
     required this.onStart,
-    required this.mode,
-    required this.onModeChanged,
-    required this.banknoteAvailable,
-    required this.coinAvailable,
     this.onRetry,
   });
 
@@ -1293,17 +1315,6 @@ class _CurrencyIntroCard extends StatelessWidget {
   final bool available;
   final bool busy;
   final VoidCallback onStart;
-
-  /// What the next scan should look for.
-  final CurrencyScanMode mode;
-  final ValueChanged<CurrencyScanMode> onModeChanged;
-
-  /// Which models actually loaded, so a mode with no model behind it can be
-  /// disabled instead of silently scanning nothing.
-  final bool banknoteAvailable;
-  final bool coinAvailable;
-
-  /// Retry the model load when neither model is available.
   final VoidCallback? onRetry;
 
   @override
@@ -1315,7 +1326,7 @@ class _CurrencyIntroCard extends StatelessWidget {
     );
     return Semantics(
       container: true,
-      label: 'Currency Recognition. Identify Indian banknotes.',
+      label: 'VisionPath AI. Currency Recognition.',
       child: FadeTransition(
         opacity: animation,
         child: ScaleTransition(
@@ -1334,109 +1345,307 @@ class _CurrencyIntroCard extends StatelessWidget {
                 stops: <double>[0.0, 0.55, 1.0],
               ),
             ),
-            padding: const EdgeInsets.all(24),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  Container(
-                    width: 66,
-                    height: 66,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Positioned(
+                  top: -70,
+                  right: -60,
+                  child: _GlowBlob(size: 230, color: const Color(0xFF2E7CF6)),
+                ),
+                Positioned(
+                  bottom: -90,
+                  left: -70,
+                  child: _GlowBlob(size: 260, color: const Color(0xFF7C5BFF)),
+                ),
+                Positioned(
+                  bottom: 120,
+                  right: -50,
+                  child: _GlowBlob(size: 180, color: const Color(0xFF4C8DFF)),
+                ),
+                Positioned.fill(
+                  child: DecoratedBox(
                     decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.30),
-                        width: 1.4,
-                      ),
-                      gradient: const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: <Color>[Color(0xFF2E7CF6), Color(0xFF6E5BFF)],
-                      ),
-                    ),
-                    child: const Icon(
-                      Icons.payments_outlined,
-                      color: Colors.white,
-                      size: 32,
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: const Color(0x1FFFFFFF)),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Currency Recognition',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    available
-                        ? 'Identify Indian banknotes offline, with voice '
-                              'feedback.'
-                        : 'Recognition model unavailable in this build.',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 13,
-                      height: 1.35,
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  _ModeSelector(
-                    mode: mode,
-                    onModeChanged: onModeChanged,
-                    banknoteAvailable: banknoteAvailable,
-                    coinAvailable: coinAvailable,
-                  ),
-                  const SizedBox(height: 14),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: ElevatedButton.icon(
-                      onPressed: !available
-                          ? (busy ? null : (onRetry ?? () {}))
-                          : ((ready && !busy) ? onStart : null),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF1769E0),
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor: const Color(0xFF3A4763),
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
+                ),
+                Positioned.fill(
+                  child: LayoutBuilder(
+                    builder: (context, cons) {
+                      final bool short = cons.maxHeight < 300;
+                      final bool narrow = cons.maxWidth < 300;
+                      final double padH = narrow ? 20 : 28;
+                      final double padV = short ? 14 : 20;
+                      final double innerWidth =
+                          (cons.maxWidth - padH * 2).clamp(160.0, 420.0);
+
+                      return Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: padH,
+                          vertical: padV,
                         ),
-                      ),
-                      icon: busy
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.4,
-                                color: Colors.white,
-                              ),
-                            )
-                          : !available
-                          ? const Icon(Icons.refresh_rounded, size: 22)
-                          : const Icon(Icons.camera_alt_outlined, size: 22),
-                      label: Text(
-                        !available
-                            ? 'RETRY'
-                            : (ready ? 'START SCANNING' : 'PREPARING...'),
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.4,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(maxWidth: innerWidth),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: <Widget>[
+                                _LogoMark(size: short ? 56 : 68),
+                                const SizedBox(height: 14),
+                                _BrandTitle(fontSize: short ? 22 : 27),
+                                const SizedBox(height: 8),
+                                const _TaglineCurrency(),
+                                const SizedBox(height: 10),
+                                Container(
+                                  width: 46,
+                                  height: 3,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(2),
+                                    gradient: const LinearGradient(
+                                      colors: [
+                                        Color(0xFF2E7CF6),
+                                        Color(0xFF7C5BFF)
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                const _SupportMessageCurrency(),
+                                const SizedBox(height: 24),
+                                const _CameraReadyPanelCurrency(),
+                                const SizedBox(height: 20),
+                                const _PageDots(),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
+                      );
+                    },
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _TaglineCurrency extends StatelessWidget {
+  const _TaglineCurrency();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'CURRENCY RECOGNITION',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        fontSize: 14,
+        height: 1.3,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 2.4,
+        color: Color(0xFFDCE7FF),
+      ),
+    );
+  }
+}
+
+class _SupportMessageCurrency extends StatelessWidget {
+  const _SupportMessageCurrency();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'Identify Indian banknotes with real-time\ndetection and voice feedback',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        fontSize: 12.5,
+        height: 1.45,
+        fontWeight: FontWeight.w500,
+        color: Color(0xCCFFFFFF),
+      ),
+    );
+  }
+}
+
+class _CameraReadyPanelCurrency extends StatelessWidget {
+  const _CameraReadyPanelCurrency();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.max,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.payments_outlined,
+            color: Color(0xFF9FC6FF),
+            size: 22,
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text(
+                  'Banknote Detection',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    height: 1.25,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Real-time currency recognition and voice assistance',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.25,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xB3FFFFFF),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LogoMark extends StatelessWidget {
+  const _LogoMark({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.30),
+          width: 1.4,
+        ),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF2E7CF6), Color(0xFF6E5BFF)],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF60A5FF).withValues(alpha: 0.45),
+            blurRadius: 26,
+            spreadRadius: 1,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Icon(Icons.payments_outlined, color: Colors.white, size: size * 0.48),
+    );
+  }
+}
+
+class _BrandTitle extends StatelessWidget {
+  const _BrandTitle({required this.fontSize});
+
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(
+            text: 'VisionPath ',
+            style: TextStyle(
+              fontSize: fontSize,
+              height: 1.1,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.2,
+              color: Colors.white,
+            ),
+          ),
+          TextSpan(
+            text: 'AI',
+            style: TextStyle(
+              fontSize: fontSize,
+              height: 1.1,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.2,
+              color: const Color(0xFF8FB6FF),
+            ),
+          ),
+        ],
+      ),
+      textAlign: TextAlign.center,
+    );
+  }
+}
+
+class _GlowBlob extends StatelessWidget {
+  const _GlowBlob({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          colors: [
+            color.withValues(alpha: 0.55),
+            color.withValues(alpha: 0.0),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PageDots extends StatelessWidget {
+  const _PageDots();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(3, (i) {
+        return Container(
+          width: 6,
+          height: 6,
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: i == 1
+                ? const Color(0xFF9FC6FF)
+                : Colors.white.withValues(alpha: 0.28),
+          ),
+        );
+      }),
     );
   }
 }
