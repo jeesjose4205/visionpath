@@ -29,7 +29,17 @@ class WebSpeechEngine implements VoiceInput {
   bool _pageReady = false;
   bool _unsupported = false;
   bool _listening = false;
+  bool _hosted = false;
   String _lastError = '';
+
+  /// True once [build] has created the WebView for this engine.
+  ///
+  /// The engine owns exactly one controller: a second [build] would spawn a
+  /// second WebView and silently steal the controller from the first. Screens
+  /// check this before hosting, so an engine already kept alive by another
+  /// mounted screen (Navigate hosts it for press-and-hold commands) is not
+  /// hosted again.
+  bool get isHosted => _hosted;
 
   /// Called with partial transcriptions while the user is speaking.
   @override
@@ -193,6 +203,7 @@ class WebSpeechEngine implements VoiceInput {
   @override
   Future<void> dispose() async {
     _listening = false;
+    _hosted = false;
     _controller?.dispose();
     _controller = null;
     try {
@@ -204,9 +215,15 @@ class WebSpeechEngine implements VoiceInput {
   }
 
   /// The InAppWebView to embed (keep it attached, tiny and invisible).
+  ///
+  /// Only the first call creates a WebView: the engine has a single controller
+  /// slot, and a second host would take it over from the first. Later calls
+  /// return nothing and [isHosted] stays true.
   Widget build() {
+    if (_hosted) return const SizedBox.shrink();
     final uri = _startUri;
     if (uri == null) return const SizedBox.shrink();
+    _hosted = true;
     return InAppWebView(
       initialSettings: InAppWebViewSettings(
         javaScriptEnabled: true,

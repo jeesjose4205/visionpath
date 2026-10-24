@@ -12,6 +12,7 @@ import '../models/path_analysis.dart';
 import '../models/app_settings.dart';
 import '../models/rgb_frame.dart';
 import '../services/camera_service.dart';
+import '../services/currency_command_parser.dart';
 import '../services/depth/depth_engine.dart';
 import '../services/depth_analysis_service.dart';
 import '../services/instruction_manager.dart';
@@ -36,6 +37,7 @@ import '../widgets/sound_mode_button.dart';
 import '../widgets/target_status_chip.dart';
 import '../widgets/press_and_hold_voice_region.dart';
 import '../widgets/voice_search_overlay.dart';
+import 'currency_recognition_screen.dart';
 import 'familiar_faces_screen.dart';
 import 'read_text_screen.dart';
 
@@ -62,7 +64,12 @@ enum _NavState {
 }
 
 class NavigateScreen extends StatefulWidget {
-  const NavigateScreen({super.key});
+  const NavigateScreen({super.key, @visibleForTesting this.voiceCommand});
+
+  /// Overrides the press-and-hold assistant controller so widget tests can
+  /// deliver a recognized transcript without a real microphone.
+  @visibleForTesting
+  final VoiceCommandController? voiceCommand;
 
   @override
   State<NavigateScreen> createState() => _NavigateScreenState();
@@ -131,12 +138,18 @@ class _NavigateScreenState extends State<NavigateScreen>
 /// arrived and the routine queue must yield to it.
 int _lastTargetSessionId = 0;
 
-/// Press-and-hold voice assistant. Owns the hold gesture, the microphone and the
-/// transcript; this screen only routes what was said into the target navigator.
-final VoiceCommandController _voiceCommand = VoiceCommandController();
+  /// Press-and-hold voice assistant. Owns the hold gesture, the microphone and
+  /// the transcript; this screen only routes what was said. Tests may inject a
+  /// controller through [NavigateScreen.voiceCommand].
+  late final VoiceCommandController _voiceCommand =
+      widget.voiceCommand ?? VoiceCommandController();
 
   /// True while the assistant is acting on the transcript a hold produced.
   bool _commandInFlight = false;
+
+  /// Guards the one-way transition into Currency Recognition so a repeated
+  /// command cannot push two copies of the screen while the first is opening.
+  bool _currencyOpening = false;
 
   ObjectDetectionService? _objectDetectionService;
   NavigationService? _navigationService;
@@ -295,6 +308,7 @@ final VoiceCommandController _voiceCommand = VoiceCommandController();
       duration: const Duration(milliseconds: 460),
     )..forward();
     _initVoiceCommands();
+    _startAlwaysOnListening();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       // Pre-warm the camera controller so START NAVIGATION reveals a live
@@ -482,17 +496,15 @@ _voiceCommand.dispose();
     _navigationService?.sceneVoiceMuted = _sceneAnnouncementsSuppressed;
   }
 
+  /// Routes hold transcripts from the moment the screen opens.
+  ///
+  /// The assistant is part of the main UI, not of a navigation run: currency
+  /// commands must work before Start Navigation is ever pressed, so the
+  /// callbacks stay registered for the whole life of the screen.
   void _startAlwaysOnListening() {
     _voiceCommand
       ..onCommand = _onVoiceCommand
       ..onFailure = _onVoiceCommandFailure;
-  }
-
-  void _stopAlwaysOnListening() {
-    _voiceCommand
-      ..onCommand = null
-      ..onFailure = null;
-    unawaited(_voiceCommand.cancel());
   }
 
   // ------------------------------------------------------------
@@ -648,7 +660,8 @@ _voiceCommand.dispose();
 // A target request only makes sense while frames are being analysed.
 _targetNavigation.setPipelineActive(true, runId: _runGeneration);
     // "Find a chair" has to work out loud, with no button: the microphone
-    // reopens by itself for as long as this run lasts.
+    // reopens by itself for as long as this run lasts. The main screen also
+    // listens for currency commands when idle; keep callbacks active.
     _startAlwaysOnListening();
 
     setState(() {
@@ -987,14 +1000,14 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
   // STOP NAVIGATION
   // ------------------------------------------------------------
 
-  Future<void> _stopNavigation() async {
+  Future<void> _stopNavigation({bool announce = true}) async {
     print('NAVIGATE_STOP_PRESSED');
     // Idempotent: STOP and BACK can both arrive while a teardown is running.
     if (_isStopping) return;
     _isStopping = true;
 
     try {
-      await _teardownNavigation();
+      await _teardownNavigation(announce: announce);
     } finally {
       _isStopping = false;
       // Both the back lock and the swipe gate are read while building, so
@@ -1005,7 +1018,11 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
   }
 
   /// Release everything the run owns, then return to the stopped screen.
-  Future<void> _teardownNavigation() async {
+  ///
+  /// [announce] is false when the run is being ended to hand the camera to
+  /// another screen (Currency Recognition), which speaks for itself; the
+  /// "Navigation stopped." confirmation would otherwise talk over it.
+  Future<void> _teardownNavigation({bool announce = true}) async {
     // Marks any in-flight inference belonging to the old run as stale BEFORE
     // any await, so it cannot re-enable the pipeline, speak, or overwrite the
     // stopped state once it finally returns.
@@ -1022,7 +1039,9 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
     // target tracking survives in the background.
     _targetNavigation.setPipelineActive(false);
     // Nothing is being analysed any more, so the microphone closes too.
-    _stopAlwaysOnListening();
+    // Keep listening active on the main screen even after navigation stops so
+    // currency commands remain available without starting navigation.
+    _startAlwaysOnListening();
 
     if (!mounted) return;
 
@@ -1043,7 +1062,7 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
     if (!mounted) return;
 
     _presentIntroCard();
-    _confirmNavigationStopped();
+    if (announce) _confirmNavigationStopped();
   }
 
   /// Tell the user the run is over, using whichever feedback channel is active.
@@ -1194,10 +1213,9 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
     );
   }
 
-  /// Press-and-hold only makes sense with a running camera behind it, so the
-  /// assistant stays out of the way on the idle and stopped screens.
-  bool get _voiceActivationEnabled =>
-      _navState != _NavState.idle && _navState != _NavState.stopped;
+  /// Press-and-hold should work from the main UI in any state so currency
+  /// commands can be issued without starting navigation.
+  bool get _voiceActivationEnabled => true;
 
   /// Route the recognized transcript. Target commands drive the target
   /// navigator. Anything else falls through to the barge-in words below.
@@ -1209,6 +1227,12 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
     _commandInFlight = true;
     _syncSceneVoiceSuppression();
     try {
+      // Currency recognition outranks the object navigator: its phrases are
+      // more specific and must never be mistaken for a "find a ..." search.
+      if (CurrencyCommandParser.matches(transcript)) {
+        unawaited(_openCurrencyRecognition());
+        return;
+      }
       if (_targetNavigation.handleCommand(transcript)) return;
       // Not a device command. "Stop." / "shut up." only mean "be quiet" when no
       // target search is running; while one is active they belong to the target
@@ -1263,6 +1287,36 @@ _targetNavigation.setPipelineActive(true, runId: _runGeneration);
             ? VoiceCommandController.permissionDeniedMessage
             : VoiceCommandController.nothingHeardMessage;
     _voiceService.enqueueSpeech(message);
+  }
+
+  /// Open Currency Recognition from a press-and-hold command.
+  ///
+  /// Works from the main screen in any state: when a navigation run owns the
+  /// camera it is stopped first, because that releases the single shared
+  /// CameraController and its frame callback, which the currency screen then
+  /// takes over. Without this the two screens would fight over one stream.
+  Future<void> _openCurrencyRecognition() async {
+    if (_currencyOpening) return;
+    _currencyOpening = true;
+    try {
+      // Hand the microphone over cleanly: any hold still open must end before
+      // the currency screen starts its own assistant session.
+      await _voiceCommand.cancel();
+      _voiceService.stop();
+      // Suppress the "Navigation stopped." line: the currency screen speaks its
+      // own greeting, and two announcements would collide.
+      if (_navigationActive) {
+        await _stopNavigation(announce: false);
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const CurrencyRecognitionScreen(),
+        ),
+      );
+    } finally {
+      _currencyOpening = false;
+    }
   }
 
   /// The hidden Google speech WebView: 1x1, no paint, no input. It must stay

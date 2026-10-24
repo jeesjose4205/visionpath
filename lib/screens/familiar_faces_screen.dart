@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -7,21 +8,28 @@ import 'package:provider/provider.dart';
 import '../models/face_detection.dart';
 import '../models/app_settings.dart';
 import '../services/camera_service.dart';
+import '../services/currency_command_parser.dart';
 import '../services/face_announcement_manager.dart';
 import '../services/face_detection_service.dart';
 import '../services/face_embedding_service.dart';
 import '../services/face_recognition_service.dart';
 import '../services/familiar_face_service.dart';
 import '../services/settings_service.dart';
+import '../services/speech_capture_service.dart';
 import '../services/vibration_service.dart';
+import '../services/voice_command_controller.dart';
 import '../services/voice_service.dart';
+import '../services/web_speech_engine.dart';
 import '../utils/portrait_rgba.dart';
 import '../widgets/camera_preview_fit.dart';
 import '../widgets/face_recognition_overlay.dart';
+import '../widgets/press_and_hold_voice_region.dart';
 import '../widgets/settings_button.dart';
 import '../widgets/settings_scope.dart';
 import '../widgets/sos_gesture.dart';
 import '../widgets/sound_mode_button.dart';
+import '../widgets/voice_search_overlay.dart';
+import 'currency_recognition_screen.dart';
 import 'face_registration_screen.dart';
 import 'registered_faces_screen.dart';
 
@@ -35,7 +43,12 @@ import 'registered_faces_screen.dart';
 /// camera with the same 5-FPS single-flight pump pattern. Pressing
 /// STOP RECOGNITION stops the pipeline and brings the title card back.
 class FamiliarFacesScreen extends StatefulWidget {
-  const FamiliarFacesScreen({super.key});
+  const FamiliarFacesScreen({super.key, @visibleForTesting this.voiceCommand});
+
+  /// Overrides the press-and-hold assistant controller so widget tests can
+  /// deliver a recognized transcript without a real microphone.
+  @visibleForTesting
+  final VoiceCommandController? voiceCommand;
 
   @override
   State<FamiliarFacesScreen> createState() => _FamiliarFacesScreenState();
@@ -90,6 +103,15 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   String _statusLine = 'Watching for known faces\u2026';
   String _statusName = '';
   bool _waitingForCamera = true;
+
+  // Press-and-hold voice assistant. Available from the main screen even before
+  // RECOGNITION is started, so currency commands need no setup first.
+  late final VoiceCommandController _voiceCommand =
+      widget.voiceCommand ?? VoiceCommandController();
+
+  /// Guards the one-way transition into Currency Recognition so a repeated
+  /// command cannot push two copies of the screen while the first is opening.
+  bool _currencyOpening = false;
 
   // ------------------------------------------------------------
   // SWIPE NAVIGATION: return to Look & Navigate (Home)
@@ -157,6 +179,17 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
       vsync: this,
       duration: const Duration(milliseconds: 460),
     )..forward();
+    // The assistant belongs to the main screen, not to a recognition run: the
+    // callbacks are wired once here so a hold works before RECOGNIZE is ever
+    // pressed and keeps working after a run stops.
+    _voiceCommand
+      ..onCommand = _onVoiceCommand
+      ..onFailure = _onVoiceCommandFailure;
+    // Idempotent: Navigate (the screen this one is pushed from) may already
+    // have started the shared speech engine.
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      unawaited(SpeechCaptureService.instance.webEngine.start());
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         final count = _faceService.people.length;
@@ -234,6 +267,9 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
   void dispose() {
     SettingsService.instance.removeListener(_applySettings);
     _shutdownPipeline();
+    // The hold gesture must not outlive the screen, and neither may the
+    // microphone it opened.
+    _voiceCommand.dispose();
     _introController.dispose();
     _voice.dispose();
     _detector.close();
@@ -532,8 +568,9 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
 
         child: Scaffold(
         backgroundColor: const Color(0xFFF8FAFD),
-        body: SafeArea(
-          child: Column(
+        body: _buildVoiceActivationArea(
+          SafeArea(
+            child: Column(
             children: [
               _buildHeader(compact),
 
@@ -583,14 +620,105 @@ class _FamiliarFacesScreenState extends State<FamiliarFacesScreen>
                       SizedBox(height: compact ? 8 : 12),
 
                       _buildBottomControls(compact),
+
+                      _speechWebViewHost(),
                     ],
                   ),
                 ),
               ),
             ],
           ),
+          ),
         ),
         ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------
+  // PRESS-AND-HOLD VOICE ASSISTANT
+  // ------------------------------------------------------------
+  //
+  // The whole surface is the activation target, exactly like Navigate, so the
+  // assistant works from this main screen whether or not recognition has been
+  // started.
+
+  Widget _buildVoiceActivationArea(Widget familiarFaces) {
+    return PressAndHoldVoiceRegion(
+      controller: _voiceCommand,
+      enabled: true,
+      child: Stack(
+        children: <Widget>[
+          familiarFaces,
+          // Above everything, transparent, purely decorative.
+          Positioned.fill(
+            child: VoiceSearchOverlay(controller: _voiceCommand),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Route the recognized transcript. Currency recognition is handled from the
+  /// main screen, before any recognition run exists; this screen owns no other
+  /// voice commands, so anything else is left alone.
+  void _onVoiceCommand(String transcript) {
+    if (CurrencyCommandParser.matches(transcript)) {
+      unawaited(_openCurrencyRecognition());
+    }
+  }
+
+  /// Speak the reason the hold produced nothing usable.
+  void _onVoiceCommandFailure(VoiceCommandFailure failure) {
+    final String message =
+        VoiceCommandController.isPermissionProblem(failure)
+            ? VoiceCommandController.permissionDeniedMessage
+            : VoiceCommandController.nothingHeardMessage;
+    _voice.enqueueSpeech(message);
+  }
+
+  /// Open Currency Recognition from a press-and-hold command.
+  ///
+  /// A live recognition run owns the shared camera, so it is stopped first:
+  /// that releases the single shared CameraController and its frame callback,
+  /// which the currency screen then takes over. Without this the two screens
+  /// would fight over one stream. The assistant's own listening session is
+  /// closed before the handover so the currency screen starts with a free
+  /// microphone.
+  Future<void> _openCurrencyRecognition() async {
+    if (_currencyOpening) return;
+    _currencyOpening = true;
+    try {
+      await _voiceCommand.cancel();
+      _voice.stop();
+      if (_recognizing) _stopRecognition();
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const CurrencyRecognitionScreen(),
+        ),
+      );
+    } finally {
+      _currencyOpening = false;
+    }
+  }
+
+  /// The hidden Google speech WebView: 1x1, no paint, no input. Hosted only
+  /// when no other mounted screen (Navigate) already keeps it alive, because
+  /// the engine has a single controller.
+  Widget _speechWebViewHost() {
+    // Widget tests set FLUTTER_TEST; the native InAppWebView has no platform
+    // channel there, so skip hosting it (the recognizer is unused in tests).
+    if (Platform.environment.containsKey('FLUTTER_TEST')) {
+      return const SizedBox.shrink();
+    }
+    final WebSpeechEngine engine = SpeechCaptureService.instance.webEngine;
+    if (engine.isHosted) return const SizedBox.shrink();
+    return SizedBox(
+      width: 1,
+      height: 1,
+      child: IgnorePointer(
+        child: ClipRect(child: engine.build()),
       ),
     );
   }

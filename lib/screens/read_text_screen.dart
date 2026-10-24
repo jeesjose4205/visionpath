@@ -10,18 +10,25 @@ import 'package:provider/provider.dart';
 import '../models/app_settings.dart';
 import '../models/ocr_result.dart';
 import '../services/camera_service.dart';
+import '../services/currency_command_parser.dart';
 import '../services/ocr_service.dart';
 import '../services/settings_service.dart';
+import '../services/speech_capture_service.dart';
 import '../services/text_guidance_service.dart';
 import '../services/vibration_service.dart';
+import '../services/voice_command_controller.dart';
 import '../services/voice_service.dart';
+import '../services/web_speech_engine.dart';
 import '../widgets/ocr_result_card.dart';
+import '../widgets/press_and_hold_voice_region.dart';
 import '../widgets/read_text_controls.dart';
 import '../widgets/settings_button.dart';
 import '../widgets/settings_scope.dart';
 import '../widgets/sos_gesture.dart';
 import '../widgets/sound_mode_button.dart';
 import '../widgets/text_camera_preview.dart';
+import '../widgets/voice_search_overlay.dart';
+import 'currency_recognition_screen.dart';
 
 /// Read Text screen - voice-guided text reading assistant.
 ///
@@ -45,7 +52,12 @@ enum _ReadPhase {
 }
 
 class ReadTextScreen extends StatefulWidget {
-  const ReadTextScreen({super.key});
+  const ReadTextScreen({super.key, @visibleForTesting this.voiceCommand});
+
+  /// Test seam: tests inject a scripted controller to drive hold/release
+  /// callbacks without a real recognizer.
+  @visibleForTesting
+  final VoiceCommandController? voiceCommand;
 
   @override
   State<ReadTextScreen> createState() => _ReadTextScreenState();
@@ -77,6 +89,15 @@ class _ReadTextScreenState extends State<ReadTextScreen>
 
   bool _reading = false;
   bool _stopReading = false;
+
+  // Press-and-hold voice assistant. Available from the main screen even before
+  // START READING, so currency commands need no active reading session.
+  late final VoiceCommandController _voiceCommand =
+      widget.voiceCommand ?? VoiceCommandController();
+
+  /// Guards the one-way transition into Currency Recognition so a repeated
+  /// command cannot push two copies of the screen while the first is opening.
+  bool _currencyOpening = false;
 
   static const Duration _guidanceVoiceCooldown = Duration(milliseconds: 1600);
 
@@ -147,6 +168,17 @@ class _ReadTextScreenState extends State<ReadTextScreen>
       vsync: this,
       duration: const Duration(milliseconds: 460),
     )..forward();
+    // The assistant belongs to the main screen, not to a reading session: a
+    // hold works before START READING is pressed and keeps working after a
+    // New Scan returns to the gate.
+    _voiceCommand
+      ..onCommand = _onVoiceCommand
+      ..onFailure = _onVoiceCommandFailure;
+    // Idempotent: Navigate (the screen this one is pushed from) may already
+    // have started the shared speech engine.
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      unawaited(SpeechCaptureService.instance.webEngine.start());
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _voice.speak(
@@ -190,6 +222,9 @@ class _ReadTextScreenState extends State<ReadTextScreen>
     SettingsService.instance.removeListener(_applySettings);
     _stopReading = true;
     _voice.stop();
+    // The hold gesture must not outlive the screen, and neither may the
+    // microphone it opened.
+    _voiceCommand.dispose();
     _cameraService?.setOnFrameAvailable((_) {});
     unawaited(_cameraService?.stopImageStream() ?? Future<void>.value());
     unawaited(_ocr.close());
@@ -743,8 +778,9 @@ final chunks = _chunkText(text);
 
         child: Scaffold(
         backgroundColor: const Color(0xFFF8FAFD),
-        body: SafeArea(
-          child: Column(
+        body: _buildVoiceActivationArea(
+          SafeArea(
+            child: Column(
             children: [
               _buildHeader(compact),
 
@@ -793,14 +829,104 @@ final chunks = _chunkText(text);
                       SizedBox(height: compact ? 8 : 12),
 
                       _buildPrimaryArea(compact),
+
+                      _speechWebViewHost(),
                     ],
                   ),
                 ),
               ),
             ],
           ),
+          ),
         ),
         ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------
+  // PRESS-AND-HOLD VOICE ASSISTANT
+  // ------------------------------------------------------------
+  //
+  // The whole surface is the activation target, exactly like Navigate, so the
+  // assistant works from this main screen whether or not reading has been
+  // started.
+
+  Widget _buildVoiceActivationArea(Widget readText) {
+    return PressAndHoldVoiceRegion(
+      controller: _voiceCommand,
+      enabled: true,
+      child: Stack(
+        children: <Widget>[
+          readText,
+          // Above everything, transparent, purely decorative.
+          Positioned.fill(
+            child: VoiceSearchOverlay(controller: _voiceCommand),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Route the recognized transcript. Currency recognition is handled from the
+  /// main screen, before any reading session exists; this screen owns no other
+  /// voice commands, so anything else is left alone.
+  void _onVoiceCommand(String transcript) {
+    if (CurrencyCommandParser.matches(transcript)) {
+      unawaited(_openCurrencyRecognition());
+    }
+  }
+
+  /// Speak the reason the hold produced nothing usable.
+  void _onVoiceCommandFailure(VoiceCommandFailure failure) {
+    final String message =
+        VoiceCommandController.isPermissionProblem(failure)
+            ? VoiceCommandController.permissionDeniedMessage
+            : VoiceCommandController.nothingHeardMessage;
+    _voice.enqueueSpeech(message);
+  }
+
+  /// Open Currency Recognition from a press-and-hold command.
+  ///
+  /// A live reading session owns the shared camera, so it is ended first (back
+  /// to the START READING gate, exactly like BACK does): that releases the
+  /// frame callback and the image stream the currency screen then takes over.
+  /// The assistant's own listening session is closed before the handover so
+  /// the currency screen starts with a free microphone.
+  Future<void> _openCurrencyRecognition() async {
+    if (_currencyOpening) return;
+    _currencyOpening = true;
+    try {
+      await _voiceCommand.cancel();
+      _voice.stop();
+      if (!_showIntroCard) _newScan();
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const CurrencyRecognitionScreen(),
+        ),
+      );
+    } finally {
+      _currencyOpening = false;
+    }
+  }
+
+  /// The hidden Google speech WebView: 1x1, no paint, no input. Hosted only
+  /// when no other mounted screen (Navigate) already keeps it alive, because
+  /// the engine has a single controller.
+  Widget _speechWebViewHost() {
+    // Widget tests set FLUTTER_TEST; the native InAppWebView has no platform
+    // channel there, so skip hosting it (the recognizer is unused in tests).
+    if (Platform.environment.containsKey('FLUTTER_TEST')) {
+      return const SizedBox.shrink();
+    }
+    final WebSpeechEngine engine = SpeechCaptureService.instance.webEngine;
+    if (engine.isHosted) return const SizedBox.shrink();
+    return SizedBox(
+      width: 1,
+      height: 1,
+      child: IgnorePointer(
+        child: ClipRect(child: engine.build()),
       ),
     );
   }

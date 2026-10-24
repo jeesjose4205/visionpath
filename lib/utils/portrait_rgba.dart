@@ -28,15 +28,35 @@ import 'package:camera/camera.dart';
   final vPlane = image.planes[2];
   final width = image.width;
   final height = image.height;
+  if (yPlane.bytes.isEmpty || uPlane.bytes.isEmpty || vPlane.bytes.isEmpty) {
+    print('FRAME_YUV_PLANES_EMPTY');
+    return null;
+  }
+
+  final yStride = yPlane.bytesPerPixel ?? 1;
+  final uStride = uPlane.bytesPerPixel ?? 1;
+  final vStride = vPlane.bytesPerPixel ?? 1;
 
   // YUV -> RGB, row-major in sensor orientation.
   final rgb = Uint8List(width * height * 3);
   int out = 0;
   for (var y = 0; y < height; y++) {
+    final yRow = y * yPlane.bytesPerRow;
+    final uRow = (y ~/ 2) * uPlane.bytesPerRow;
+    final vRow = (y ~/ 2) * vPlane.bytesPerRow;
     for (var x = 0; x < width; x++) {
-      final yv = yPlane.bytes[y * yPlane.bytesPerRow + x];
-      final u = uPlane.bytes[(y ~/ 2) * uPlane.bytesPerRow + (x ~/ 2)] - 128;
-      final v = vPlane.bytes[(y ~/ 2) * vPlane.bytesPerRow + (x ~/ 2)] - 128;
+      final yIndex = (yRow + x * yStride).clamp(0, yPlane.bytes.length - 1);
+      final uIndex = (uRow + (x ~/ 2) * uStride).clamp(
+        0,
+        uPlane.bytes.length - 1,
+      );
+      final vIndex = (vRow + (x ~/ 2) * vStride).clamp(
+        0,
+        vPlane.bytes.length - 1,
+      );
+      final yv = yPlane.bytes[yIndex];
+      final u = uPlane.bytes[uIndex] - 128;
+      final v = vPlane.bytes[vIndex] - 128;
 
       rgb[out++] = (yv + 1.370705 * v).round().clamp(0, 255);
       rgb[out++] = (yv - 0.337633 * u - 0.698001 * v).round().clamp(0, 255);

@@ -45,6 +45,21 @@ dependency_overrides:
 flutter:
   uses-material-design: true
   assets:
-    - assets/ml/mobilefacenet.tflite
-    - assets/ml/arcface_w600k_mbf.tflite
+    # Directory entry (not per-file) so the currency note detector model and its
+    # optional label sidecar are bundled the moment they are dropped into
+    # assets/ml, without a pubspec edit that would fail the build while the
+    # model is still absent.
+    #
+    # Currency Recognition expects exactly these files (see
+    # lib/services/currency_recognition_service.dart and
+    # lib/services/currency_detector.dart):
+    #   assets/ml/currency_notes_yolo.tflite       YOLOv10n note detector,
+    #                                              input [1,640,640,3] float32
+    #                                              NHWC RGB /255, output
+    #                                              [1,300,6] xyxy(0..1)+conf+cls
+    #   assets/ml/currency_notes_yolo_labels.txt   optional, one class per line,
+    #                                              order must match the model
+    # Face models already in this folder (scrfd_640.tflite etc.) are unrelated
+    # and must not be renamed to look like currency models.
+    - assets/ml/
     - assets/models/vosk-model-small-en-us-0.15.zip
